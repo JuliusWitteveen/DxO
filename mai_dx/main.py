@@ -15,6 +15,7 @@ import json
 import sys
 import time
 import re
+import ast
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Union, Literal, Optional, Tuple
@@ -415,6 +416,10 @@ class MaiDxOrchestrator:
     ) -> Optional[Dict[str, Any]]:
         """Extract tool-call arguments from an agent response."""
         try:
+            # Handle list responses by recursively processing the first element
+            if isinstance(agent_response, list) and agent_response:
+                return self._extract_function_call_output(agent_response[0])
+
             # Handle direct dictionary response from some models
             if isinstance(agent_response, dict):
                 if "tool_calls" in agent_response and agent_response["tool_calls"]:
@@ -432,9 +437,12 @@ class MaiDxOrchestrator:
                 match = re.search(r'\{.*\}', agent_response, re.DOTALL)
                 if match:
                     json_str = match.group(0)
-                    return json.loads(json_str)
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        return ast.literal_eval(json_str)
 
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
+        except (json.JSONDecodeError, ValueError, SyntaxError, KeyError, IndexError) as e:
             logger.warning(
                 f"Failed to extract function call output: {e}. Response: {agent_response}"
             )
