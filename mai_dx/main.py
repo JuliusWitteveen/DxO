@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Dict, List, Union, Literal, Optional, Tuple
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # --- Dependency Management ---
 # Dependencies are listed in requirements.txt and can be installed using
@@ -104,6 +104,19 @@ class Action(BaseModel):
     reasoning: str = Field(
         ..., description="The reasoning behind choosing this action."
     )
+
+
+class DifferentialEntry(BaseModel):
+    """Structured representation of a single diagnosis probability."""
+
+    diagnosis: str
+    probability: float = Field(..., ge=0.0, le=1.0)
+
+
+class DifferentialSchema(BaseModel):
+    """Schema for a differential diagnosis list."""
+
+    differential: List[DifferentialEntry]
 
 
 @dataclass
@@ -339,7 +352,12 @@ class MaiDxOrchestrator:
     def _get_prompt_for_role(self, role: AgentRole) -> str:
         """Return the system prompt for a given agent role."""
         prompts = {
-            AgentRole.HYPOTHESIS: "You are Dr. Hypothesis. Maintain a probability-ranked differential diagnosis. Update probabilities with Bayesian reasoning after each new finding. Provide a list of top 3 diagnoses with probabilities and rationale.",
+            AgentRole.HYPOTHESIS: (
+                "You are Dr. Hypothesis. Maintain a probability-ranked differential diagnosis. "
+                "Update probabilities with Bayesian reasoning after each new finding. "
+                "Return the differential as JSON in the format: {\"differential\": [{\"diagnosis\": \"<name>\", \"probability\": 0.0}]}. "
+                "Probabilities must be floats between 0 and 1. Provide any rationale after the JSON block."
+            ),
             AgentRole.TEST_CHOOSER: "You are Dr. Test-Chooser. Select up to 2 diagnostic tests that maximally discriminate between leading hypotheses. Optimize for information value versus cost.",
             AgentRole.CHALLENGER: "You are Dr. Challenger, the devil's advocate. Identify cognitive biases, highlight contradictory evidence, and propose one alternative hypothesis or a falsifying test.",
             AgentRole.STEWARDSHIP: "You are Dr. Stewardship. Enforce cost-conscious care. Challenge low-yield, expensive tests and suggest cheaper, diagnostically equivalent alternatives.",
@@ -564,27 +582,27 @@ class MaiDxOrchestrator:
         return action
 
     def _update_differential_from_text(self, case_state: CaseState, text: str):
-        """Extract and update differential diagnosis from text."""
+        """Extract and update differential diagnosis from JSON-formatted text."""
         try:
             if not isinstance(text, str):
                 text = str(text)
 
-            # Pattern to find diagnosis and probability, e.g., "Disease: 70%"
-            pattern = re.compile(r"([A-Za-z\s-]+):\s*(\d{1,3})%")
-            matches = pattern.findall(text)
-            new_differential = {}
-            for diag, prob in matches:
-                value = float(prob)
-                if value > 100:
-                    logger.warning(
-                        f"Probability for {diag.strip()} exceeds 100% ({value}%), capping at 100%."
-                    )
-                    value = 100.0
-                new_differential[diag.strip()] = value / 100.0
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start == -1 or end == -1:
+                raise ValueError("No JSON object found in hypothesis analysis")
+
+            json_str = text[start:end]
+            data = json.loads(json_str)
+            schema = DifferentialSchema(**data)
+            new_differential = {
+                entry.diagnosis.strip(): entry.probability
+                for entry in schema.differential
+            }
             if new_differential:
                 case_state.update_differential(new_differential)
                 logger.debug(f"Updated differential: {new_differential}")
-        except Exception as e:
+        except (json.JSONDecodeError, ValidationError, ValueError) as e:
             logger.warning(
                 f"Could not parse differential diagnosis from text: {e}"
             )
