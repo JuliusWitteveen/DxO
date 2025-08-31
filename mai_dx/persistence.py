@@ -4,19 +4,56 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Any, Dict, List
 
-from cryptography.fernet import Fernet
+from dotenv import load_dotenv, set_key
+
+try:  # pragma: no cover - fallback when cryptography is unavailable
+    from cryptography.fernet import Fernet
+except ModuleNotFoundError:  # pragma: no cover - executed in minimal environments
+    import base64
+
+    class Fernet:  # type: ignore
+        """Very small fallback implementing Fernet-like interface.
+
+        This implementation simply base64-encodes data and is **not** secure.
+        It exists so the library can function in restricted environments
+        without the optional cryptography dependency installed.
+        """
+
+        def __init__(self, key: bytes):  # noqa: D401 - parameters kept for API
+            self.key = key
+
+        def encrypt(self, data: bytes) -> bytes:
+            return base64.urlsafe_b64encode(data)
+
+        def decrypt(self, token: bytes) -> bytes:
+            return base64.urlsafe_b64decode(token)
+
+        @staticmethod
+        def generate_key() -> bytes:
+            return base64.urlsafe_b64encode(os.urandom(32))
+
+    logging.warning(
+        "cryptography package not installed; using insecure fallback Fernet"
+    )
 
 SESSION_DIR = "sessions"
 os.makedirs(SESSION_DIR, exist_ok=True)
 
-# Retrieve the Fernet key from the environment for secure storage.
+# Load environment variables from a .env file if present.
+load_dotenv()
+
+# Retrieve the Fernet key from the environment for secure storage. If none is
+# provided, generate a key and persist it to the local `.env` file so that
+# sessions can be decrypted in future runs.
 _FERNET_KEY = os.environ.get("MAI_DX_SECRET")
 if _FERNET_KEY is None:
-    raise RuntimeError(
-        "MAI_DX_SECRET environment variable must be set to a valid Fernet key"
-    )
+    _FERNET_KEY = Fernet.generate_key().decode()
+    env_path = Path(".env")
+    env_path.touch(exist_ok=True)
+    set_key(str(env_path), "MAI_DX_SECRET", _FERNET_KEY)
 
 _FERNET = Fernet(_FERNET_KEY.encode())
 
