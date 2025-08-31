@@ -1,32 +1,24 @@
 """Persistence helpers for saving and loading diagnostic sessions."""
 
-import base64
-import itertools
 import json
 import logging
 import os
 from datetime import datetime
 from typing import Dict, Any, List
 
+from cryptography.fernet import Fernet
+
 SESSION_DIR = "sessions"
 os.makedirs(SESSION_DIR, exist_ok=True)
 
-# Simple XOR-based encryption/decryption. The key can be provided via the
-# MAI_DX_SECRET environment variable; otherwise a default is used.
-_SECRET_KEY = os.environ.get("MAI_DX_SECRET", "mai_dx_default_key").encode()
+# Retrieve the Fernet key from the environment for secure storage.
+_FERNET_KEY = os.environ.get("MAI_DX_SECRET")
+if _FERNET_KEY is None:
+    raise RuntimeError(
+        "MAI_DX_SECRET environment variable must be set to a valid Fernet key"
+    )
 
-
-def _xor_bytes(data: bytes, key: bytes) -> bytes:
-    """XOR the data with the given key (repeating the key as needed).
-
-    Args:
-        data: Bytes to encrypt or decrypt.
-        key: Secret key used for XOR operation.
-
-    Returns:
-        The transformed bytes after XOR.
-    """
-    return bytes(a ^ b for a, b in zip(data, itertools.cycle(key)))
+_FERNET = Fernet(_FERNET_KEY.encode())
 
 
 def save_session(session_data: Dict[str, Any], session_id: str) -> None:
@@ -41,7 +33,7 @@ def save_session(session_data: Dict[str, Any], session_id: str) -> None:
     """
     filepath = os.path.join(SESSION_DIR, f"{session_id}.json")
     json_str = json.dumps(session_data, indent=2).encode("utf-8")
-    encrypted = base64.b64encode(_xor_bytes(json_str, _SECRET_KEY))
+    encrypted = _FERNET.encrypt(json_str)
     with open(filepath, "wb") as f:
         f.write(encrypted)
 
@@ -65,7 +57,7 @@ def load_session(session_id: str) -> Dict[str, Any]:
     with open(filepath, "rb") as f:
         encrypted = f.read()
     try:
-        decrypted = _xor_bytes(base64.b64decode(encrypted), _SECRET_KEY)
+        decrypted = _FERNET.decrypt(encrypted)
         return json.loads(decrypted.decode("utf-8"))
     except Exception as e:
         raise ValueError(
