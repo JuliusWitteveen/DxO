@@ -1,13 +1,20 @@
-import streamlit as st
-import json
 import os
 from datetime import datetime
-from pathlib import Path
-import pandas as pd
-from mai_dx.interactive import InteractiveDxSession
-from mai_dx.export import export_session_to_markdown
-from mai_dx.persistence import save_session, load_session, list_sessions, delete_session
-from mai_dx.transparency import (
+import streamlit as st
+from dotenv import set_key
+
+from mai_dx.persistence import list_sessions
+from mai_dx.ui import (
+    setup_page,
+    is_api_key_set,
+    initialize_session,
+    process_clinical_response,
+    save_current_session,
+    load_saved_session,
+    export_to_markdown,
+    display_current_request,
+    display_differential_diagnosis,
+    display_session_history,
     DiagnosticFlowVisualizer,
     DeliberationTheater,
     AgentInspector,
@@ -16,296 +23,27 @@ from mai_dx.transparency import (
     InteractiveExplorer,
     ConfidenceCalibration,
     create_diagnostic_journey_visualization,
-    create_confidence_timeline
-)
-import plotly.graph_objects as go
-from typing import Dict, List, Optional
-import markdown2
-import sys
-from dotenv import load_dotenv, set_key
-
-# Laad omgevingsvariabelen uit het .env-bestand bij het opstarten
-load_dotenv()
-
-# Page config
-st.set_page_config(
-    page_title="MAI-DxO Interactive Diagnostic Tool",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    create_confidence_timeline,
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-.main-header {
-    font-size: 2.5rem;
-    font-weight: bold;
-    color: #1f77b4;
-    text-align: center;
-    margin-bottom: 2rem;
-}
-.agent-card {
-    background-color: #f0f2f6;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-}
-.diagnosis-card {
-    background-color: #e8f4f8;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    margin-bottom: 0.5rem;
-    border-left: 4px solid #1f77b4;
-}
-.status-indicator {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    margin-right: 5px;
-}
-.status-active {
-    background-color: #2ecc71;
-    animation: pulse 1s infinite;
-}
-.status-complete {
-    background-color: #3498db;
-}
-.status-error {
-    background-color: #e74c3c;
-}
-@keyframes pulse {
-    0% { opacity: 1; }
-    50% { opacity: 0.5; }
-    100% { opacity: 1; }
-}
-</style>
-""", unsafe_allow_html=True)
 
-# Initialize session state
-if 'session' not in st.session_state:
-    st.session_state.session = None
-if 'visualization_components' not in st.session_state:
-    st.session_state.visualization_components = {
-        'flow_viz': DiagnosticFlowVisualizer(),
-        'theater': DeliberationTheater(),
-        'inspector': AgentInspector(),
-        'reasoning': ReasoningTraceViewer(),
-        'limitations': LimitationsDisplay(),
-        'explorer': InteractiveExplorer(),
-        'confidence': ConfidenceCalibration()
-    }
-
-def is_api_key_set():
-    """Controleer of de API-sleutel is ingesteld in de omgevingsvariabelen."""
-    return bool(os.getenv("OPENAI_API_KEY"))
-
-def initialize_session(model_name: str = "gpt-4o", mode: str = "no_budget", case_details: str = ""):
-    """Initialize a new diagnostic session using InteractiveDxSession"""
-    try:
-        config = {
-            "model_name": model_name,
-            "mode": mode,
-            "max_iterations": 15,
-            "initial_budget": 10000,
-            "physician_visit_cost": 300
-        }
-        
-        st.session_state.session = InteractiveDxSession(orchestrator_config=config)
-        
-        if case_details:
-            st.session_state.session.start(case_details)
-            return True
-        return False
-    except Exception as e:
-        st.error(f"Failed to initialize session: {str(e)}")
-        return False
-
-def process_clinical_response(response: str):
-    """Process the clinical response using InteractiveDxSession"""
-    if not st.session_state.session:
-        return None
-    
-    try:
-        with st.spinner("Processing clinical response..."):
-            st.session_state.session.step(response)
-            
-            # Check if diagnosis is complete
-            if st.session_state.session.is_complete:
-                last_turn = st.session_state.session.turns[-1]
-                return {
-                    'diagnosis_complete': True,
-                    'final_diagnosis': last_turn.action_request.content,
-                    'action': last_turn.action_request
-                }
-            else:
-                last_turn = st.session_state.session.turns[-1]
-                return {
-                    'diagnosis_complete': False,
-                    'next_request': f"{last_turn.action_request.action_type.capitalize()}: {last_turn.action_request.content}",
-                    'action': last_turn.action_request
-                }
-        
-    except Exception as e:
-        st.error(f"Error processing response: {str(e)}")
-        return None
-
-def save_current_session():
-    """Save current session using the persistence module"""
-    if not st.session_state.session:
-        st.warning("No session data to save")
-        return
-    
-    try:
-        session_data = st.session_state.session.to_dict()
-        session_id = st.session_state.session.session_id
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        session_data["saved_at"] = timestamp
-        save_session(session_data, session_id)
-
-        st.success(f"Session saved at {timestamp} (ID: {session_id[:8]}...)")
-        return session_id
-    except Exception as e:
-        st.error(f"Failed to save session: {str(e)}")
-        return None
-
-def load_saved_session(session_id: str):
-    """Load a saved session using the persistence module"""
-    try:
-        session_data = load_session(session_id)
-        st.session_state.session = InteractiveDxSession.from_dict(session_data)
-        st.success("Session loaded successfully!")
-        return True
-    except Exception as e:
-        st.error(f"Failed to load session: {str(e)}")
-        return False
-
-def export_to_markdown():
-    """Export session to markdown format"""
-    if not st.session_state.session:
-        return None
-    
-    try:
-        session_data = st.session_state.session.to_dict()
-        return export_session_to_markdown(session_data)
-    except Exception as e:
-        st.error(f"Failed to export: {str(e)}")
-        return None
-
-def display_current_request():
-    """Display the current request from the AI panel"""
-    if not st.session_state.session or not st.session_state.session.turns:
-        return
-    
-    last_turn = st.session_state.session.turns[-1]
-    
-    if not st.session_state.session.is_complete:
-        action = last_turn.action_request
-        
-        # Display request with appropriate styling
-        if action.action_type == "ask":
-            icon = "💬"
-            color = "blue"
-        elif action.action_type == "test":
-            icon = "🔬"
-            color = "orange"
-        else:
-            icon = "🎯"
-            color = "green"
-        
-        st.markdown(f"""
-        <div style="background-color: #f0f9ff; border-left: 4px solid {color}; padding: 1rem; border-radius: 0.5rem; margin: 1rem 0;">
-            <h4 style="margin: 0; color: #333;">{icon} Clinical Request (Turn {last_turn.turn_number})</h4>
-            <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem;">{action.content}</p>
-            <p style="margin: 0.5rem 0 0 0; font-size: 0.9rem; color: #666;"><em>Reasoning: {action.reasoning}</em></p>
-        </div>
-        """, unsafe_allow_html=True)
-
-def display_differential_diagnosis():
-    """Display current differential diagnosis with visual indicators"""
-    if not st.session_state.session or not st.session_state.session.case_state:
-        return
-    
-    differential = st.session_state.session.case_state.differential_diagnosis
-    if not differential:
-        st.info("No differential diagnosis formulated yet")
-        return
-    
-    st.subheader("📊 Current Differential Diagnosis")
-    
-    # Sort by probability
-    sorted_diff = sorted(differential.items(), key=lambda x: x[1], reverse=True)
-    
-    for i, (diagnosis, probability) in enumerate(sorted_diff[:5]):
-        # Color coding based on probability
-        if probability > 0.5:
-            color = "#2ecc71"
-            icon = "🟢"
-        elif probability > 0.2:
-            color = "#f39c12"
-            icon = "🟡"
-        else:
-            color = "#e74c3c"
-            icon = "🔴"
-        
-        # Progress bar visualization
-        st.markdown(f"""
-        <div style="margin-bottom: 1rem;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: bold;">{icon} {diagnosis}</span>
-                <span style="color: {color}; font-weight: bold;">{probability:.1%}</span>
-            </div>
-            <div style="background-color: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden;">
-                <div style="background-color: {color}; width: {probability*100}%; height: 100%;"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-def display_session_history():
-    """Display session history with expandable details"""
-    if not st.session_state.session or not st.session_state.session.turns:
-        return
-    
-    st.subheader("📋 Session History")
-    
-    # Display in reverse order (most recent first)
-    for turn in reversed(st.session_state.session.turns[-5:]):
-        action = turn.action_request
-        
-        # Determine icon and color based on action type
-        if action.action_type == "ask":
-            icon = "💬"
-            color = "#3498db"
-        elif action.action_type == "test":
-            icon = "🔬"
-            color = "#e67e22"
-        else:
-            icon = "🎯"
-            color = "#27ae60"
-        
-        with st.expander(f"{icon} Turn {turn.turn_number} - {action.action_type.upper()}", expanded=(turn == st.session_state.session.turns[-1])):
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.markdown(f"**Request:** {action.content}")
-                if turn.physician_input:
-                    st.markdown(f"**Your Response:** {turn.physician_input}")
-                st.markdown(f"**AI Reasoning:** {action.reasoning}")
-            
-            with col2:
-                if turn.differential_at_turn:
-                    st.markdown("**Top Diagnoses:**")
-                    for name, prob in list(sorted(turn.differential_at_turn.items(), key=lambda x: x[1], reverse=True))[:3]:
-                        st.markdown(f"- {name}: {prob:.1%}")
-                
-                if hasattr(turn, 'cost_at_turn'):
-                    st.metric("Total Cost", f"${turn.cost_at_turn}")
-
-# Main UI
 def main():
+    setup_page()
+
+    if 'session' not in st.session_state:
+        st.session_state.session = None
+    if 'visualization_components' not in st.session_state:
+        st.session_state.visualization_components = {
+            'flow_viz': DiagnosticFlowVisualizer(),
+            'theater': DeliberationTheater(),
+            'inspector': AgentInspector(),
+            'reasoning': ReasoningTraceViewer(),
+            'limitations': LimitationsDisplay(),
+            'explorer': InteractiveExplorer(),
+            'confidence': ConfidenceCalibration(),
+        }
+
     st.markdown('<h1 class="main-header">🏥 MAI-DxO Interactive Diagnostic Tool</h1>', unsafe_allow_html=True)
-    
     api_key_is_set = is_api_key_set()
 
     # Sidebar
@@ -585,3 +323,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
