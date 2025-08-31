@@ -427,8 +427,14 @@ class MaiDxOrchestrator:
                     if "function" in tool_call and "arguments" in tool_call["function"]:
                         args = tool_call["function"]["arguments"]
                         return json.loads(args) if isinstance(args, str) else args
+                if "function" in agent_response and "arguments" in agent_response["function"]:
+                    args = agent_response["function"]["arguments"]
+                    return json.loads(args) if isinstance(args, str) else args
                 # Fallback for simple dicts that might be the arguments themselves
-                if "action_type" in agent_response and "content" in agent_response:
+                if all(
+                    key in agent_response
+                    for key in ("action_type", "content", "reasoning")
+                ):
                     return agent_response
 
             # Handle string response which might contain a JSON object

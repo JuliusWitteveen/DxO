@@ -59,3 +59,28 @@ def test_single_quoted_string_parsed(main_module):
     result = orchestrator._extract_function_call_output(response)
     assert result == expected
 
+
+def test_function_dict_parsed(main_module):
+    orchestrator = main_module.MaiDxOrchestrator.__new__(
+        main_module.MaiDxOrchestrator
+    )
+    response = {
+        "function": {
+            "arguments": (
+                '{"action_type": "ask", "content": "Age?", "reasoning": "Need age"}'
+            )
+        }
+    }
+    expected = {"action_type": "ask", "content": "Age?", "reasoning": "Need age"}
+    result = orchestrator._extract_function_call_output(response)
+    assert result == expected
+
+
+def test_missing_reasoning_returns_none(main_module):
+    orchestrator = main_module.MaiDxOrchestrator.__new__(
+        main_module.MaiDxOrchestrator
+    )
+    response = {"action_type": "ask", "content": "Age?"}
+    result = orchestrator._extract_function_call_output(response)
+    assert result is None
+
