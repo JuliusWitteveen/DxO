@@ -1,11 +1,14 @@
 import os
+import json
 from datetime import datetime
 import streamlit as st
-from dotenv import set_key
+from dotenv import set_key, load_dotenv
 
-from mai_dx.persistence import list_sessions
+from ui_controls import render_settings_panel
+from llm_client_factory import LLMClient
+
+from mai_dx.persistence import list_sessions, load_session
 from mai_dx.ui import (
-    setup_page,
     is_api_key_set,
     initialize_session,
     process_clinical_response,
@@ -26,9 +29,12 @@ from mai_dx.ui import (
     create_confidence_timeline,
 )
 
+st.set_page_config(layout="wide")
+load_dotenv()
+SETTINGS = render_settings_panel()
+
 
 def main():
-    setup_page()
 
     if 'session' not in st.session_state:
         st.session_state.session = None
@@ -46,10 +52,20 @@ def main():
     st.markdown('<h1 class="main-header">🏥 MAI-DxO Interactive Diagnostic Tool</h1>', unsafe_allow_html=True)
     api_key_is_set = is_api_key_set()
 
+    llm = None
+    if api_key_is_set:
+        llm = LLMClient(
+            model=SETTINGS["model_name"],
+            temperature=SETTINGS["temperature"],
+            top_p=SETTINGS["top_p"],
+            max_tokens=SETTINGS["max_tokens"],
+            reasoning_effort=SETTINGS["reasoning_effort"],
+        )
+
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-        
+
         # API Key Setup
         if not api_key_is_set:
             st.warning("⚠️ API Key Required")
@@ -71,14 +87,7 @@ def main():
                 with open(".env", "w") as f:
                     f.write("")
                 st.rerun()
-        
-        # Model Selection
-        model_name = st.selectbox(
-            "Select Model:",
-            ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-            index=0
-        )
-        
+
         # Mode Selection
         mode = st.selectbox(
             "Diagnostic Mode:",
@@ -98,7 +107,17 @@ def main():
         
         with col2:
             if st.button("💾 Save Session", use_container_width=True):
-                save_current_session()
+                session_id = save_current_session()
+                if session_id and SETTINGS.get("save_settings_with_session", True):
+                    try:
+                        session_file = os.path.join("sessions", f"{session_id}.json")
+                        with open(session_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        data["settings"] = SETTINGS
+                        with open(session_file, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2)
+                    except Exception as e:
+                        st.error(f"Failed to include settings: {e}")
         
         # Load session
         try:
@@ -113,6 +132,9 @@ def main():
                 
                 if st.session_state.session_selector and st.button("📂 Load", use_container_width=True):
                     if load_saved_session(st.session_state.session_selector):
+                        loaded_session = load_session(st.session_state.session_selector)
+                        if loaded_session.get("settings"):
+                            st.session_state.dxo_settings = loaded_session["settings"]
                         st.rerun()
         except Exception as e:
             st.error(f"Error loading sessions: {str(e)}")
@@ -162,7 +184,7 @@ def main():
         with col1:
             if st.button("Start Diagnostic Session", type="primary", use_container_width=True):
                 if case_details:
-                    if initialize_session(model_name, mode, case_details):
+                    if initialize_session(SETTINGS["model_name"], mode, case_details):
                         st.rerun()
                 else:
                     st.warning("Please enter initial case presentation")
@@ -170,7 +192,7 @@ def main():
         with col2:
             if st.button("Load Example Case", use_container_width=True):
                 example_case = "A 29-year-old woman was admitted to the hospital because of sore throat and peritonsillar swelling and bleeding. Symptoms did not abate with antimicrobial therapy. No fevers, headaches, or gastrointestinal symptoms. Past medical history is unremarkable."
-                if initialize_session(model_name, mode, example_case):
+                if initialize_session(SETTINGS["model_name"], mode, example_case):
                     st.rerun()
         
         # Display example cases
@@ -213,6 +235,9 @@ def main():
                     with col_btn1:
                         if st.button("Submit Response", type="primary", use_container_width=True):
                             if clinical_response:
+                                messages = [{"role": "user", "content": clinical_response}]
+                                if llm:
+                                    text, raw = llm.generate(messages, system_prompt=SETTINGS["system_prompt"])
                                 result = process_clinical_response(clinical_response)
                                 if result:
                                     if result.get('diagnosis_complete'):
@@ -221,10 +246,13 @@ def main():
                                     st.rerun()
                             else:
                                 st.warning("Please enter clinical findings")
-                    
+
                     with col_btn2:
                         if st.button("Skip/Unknown", use_container_width=True):
-                            result = process_clinical_response("Information not available / Unable to perform requested action")
+                            skip_message = "Information not available / Unable to perform requested action"
+                            if llm:
+                                text, raw = llm.generate([{ "role": "user", "content": skip_message }], system_prompt=SETTINGS["system_prompt"])
+                            result = process_clinical_response(skip_message)
                             if result:
                                 st.rerun()
                 else:
