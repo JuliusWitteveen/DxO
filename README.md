@@ -1,109 +1,166 @@
-# MAI Diagnostic Orchestrator (MAI-DxO)
+# DxO — Diagnostic Orchestrator (Streamlit)
 
-[![Paper](https://img.shields.io/badge/Paper-arXiv:2306.022405-red.svg)](https://arxiv.org/abs/2306.022405)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/downloads/)
+> Python prototype of a multi-agent diagnostic system with a Streamlit GUI.  
+> Built for hands-on experimentation and quick iteration.
 
-MAI-DxO is an interactive, AI-powered diagnostic tool that implements the concepts from Microsoft Research's "Sequential Diagnosis with Language Models" paper. It simulates a virtual panel of physician-agents to perform iterative medical diagnosis, now with a human-in-the-loop interface for real-time clinical evaluation.
+---
 
-This project provides two modes of operation:
-1.  **Autonomous Mode**: The original simulation that runs a full diagnostic process based on a complete, hidden case file.
-2.  **Interactive Mode**: A new turn-based Streamlit application where a human physician provides clinical findings in response to the AI's requests.
+## Contents
+- [What is DxO?](#what-is-dxo)
+- [Quick start (Windows, cmd.exe)](#quick-start-windows-cmdexe)
+- [Run modes](#run-modes)
+- [Repository layout](#repository-layout)
+- [Configuration](#configuration)
+- [Using the Streamlit GUI](#using-the-streamlit-gui)
+- [Saving, loading, and exports](#saving-loading-and-exports)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-![MAI-DxO Interactive UI Screenshot](./mai_dxo_screenshot.png)
+---
 
-## ✨ Key Features
+## What is DxO?
+DxO is a **language-model–driven diagnostic orchestrator**. Multiple “physician” agents propose and critique next actions while maintaining an evolving **differential diagnosis**. You can:
+- **Drive the case interactively** in a Streamlit UI (you act as the “oracle” that provides findings/results).
+- **Run headless/autonomous simulations** from the terminal to benchmark behavior.
 
-- **Interactive Turn-Based UI**: A Streamlit application that allows physicians to guide the diagnostic process.
-- **8 AI Physician Agents**: Specialized roles for comprehensive, multi-faceted diagnosis.
-- **Session Persistence**: Save, load, and resume diagnostic sessions.
-- **Transparency Panels**: View the detailed reasoning of each AI agent at every turn.
-- **Differential Diagnosis Timeline**: Visualize how the diagnostic probabilities evolve over time.
-- **Markdown Export**: Generate a complete, shareable report of any session.
-- **Autonomous Benchmark Mode**: Run the original simulation for research and evaluation.
+Typical agents include: hypothesis generator, test selector, challenger, stewardship, checklist, and a consensus step. The UI exposes transparency panels and a differential timeline, and you can save/load sessions or export Markdown.
 
-## 🚀 Quick Start: Interactive Mode
+---
 
-### 1. Setup
+## Quick start (Windows, cmd.exe)
 
-Clone the repository and create a virtual environment:
+> All commands below are for **Command Prompt** (`cmd.exe`), not PowerShell or bash.
 
-```bash
-git clone https://github.com/The-Swarm-Corporation/Open-MAI-Dx-Orchestrator.git
-cd Open-MAI-Dx-Orchestrator
-python3 -m venv venv
-source venv/bin/activate
+```bat
+:: 1) Clone
+git clone https://github.com/JuliusWitteveen/DxO.git
+cd DxO
+
+:: 2) Create & activate venv
+python -m venv .venv
+.\.venv\Scripts\activate
+
+:: 3) Install dependencies
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-# or
-python scripts/install_dependencies.py
-```
 
-### 2. Environment Variables
+:: 4) Configure keys (creates .env)
+echo OPENAI_API_KEY=sk-REPLACE_ME> .env
+:: Optional providers/flags (append lines as needed):
+:: echo GEMINI_API_KEY=REPLACE_ME>> .env
+:: echo MAI_DX_SECRET=REPLACE_ME_ANY_RANDOM_STRING>> .env
 
-Create a `.env` file in the project root and add your API keys. The application will prompt for keys if they are not found.
-
-```sh
-# .env file
-OPENAI_API_KEY="sk-..."
-# GEMINI_API_KEY="..."
-```
-
-### 3. Run the App
-
-```bash
+:: 5) Launch the Streamlit UI
 streamlit run app.py
 ```
 
-Your browser will open with the MAI-DxO interactive interface.
+---
 
-## 🔬 Autonomous Mode
+## Run modes
 
-To run the original autonomous benchmark simulation:
+### 1) Interactive UI (Streamlit)
 
-```bash
-python3 example_autonomous.py
+```bat
+.\.venv\Scripts\activate
+streamlit run app.py
 ```
 
-This will run a full diagnostic session in your terminal based on the pre-defined case in the script.
+Open the local URL that Streamlit prints (usually `http://localhost:8501`).
 
-## ⚙️ How It Works: The Virtual Physician Panel
+### 2) Autonomous/headless run
 
-MAI-DxO employs a multi-agent system where each agent has a specific role:
-
-- **🧠 Dr. Hypothesis**: Maintains the differential diagnosis.
-- **🔬 Dr. Test-Chooser**: Selects the most informative diagnostic tests.
-- **🤔 Dr. Challenger**: Prevents cognitive biases and diagnostic errors.
-- **💰 Dr. Stewardship**: Ensures cost-effective care.
-- **✅ Dr. Checklist**: Performs quality control checks.
-- **🤝 Consensus Coordinator**: Synthesizes panel decisions into a single action.
-- **🔑 Gatekeeper**: (Autonomous Mode) Acts as the clinical information oracle.
-- **⚖️ Judge**: (Autonomous Mode) Evaluates the final diagnostic accuracy.
-
-## 🤝 Contributing
-
-We welcome contributions! Please feel free to open an issue or submit a pull request.
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 📚 Citation
-
-If you use this work in your research, please cite both the original paper and this software implementation.
-```bibtex
-@misc{nori2023sequential,
-      title={Sequential Diagnosis with Large Language Models}, 
-      author={Harsha Nori and Mayank Daswani and Christopher Kelly and Scott Lundberg and Marco Tulio Ribeiro and Marc Wilson and Xiaoxuan Liu and Viknesh Sounderajah and Jonathan Carlson and Matthew P Lungren and Bay Gross and Peter Hames and Mustafa Suleyman and Dominic King and Eric Horvitz},
-      year={2023},
-      eprint={2306.022405},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}
-}
-
-@software{mai_dx_orchestrator,
-    title={Open-MAI-Dx-Orchestrator: An Interactive Implementation of Sequential Diagnosis with Language Models},
-    author={The-Swarm-Corporation},
-    year={2024},
-    url={https://github.com/The-Swarm-Corporation/Open-MAI-Dx-Orchestrator}
-}
+```bat
+.\.venv\Scripts\activate
+python example_autonomous.py
 ```
+
+---
+
+## Repository layout
+
+```
+DxO/
+├─ app.py                      # Streamlit entry point (interactive mode)
+├─ example_autonomous.py       # Headless simulation runner
+├─ mai_dx/                     # Core orchestrator, agents, parsers, persistence, UI helpers
+├─ tests/                      # Unit tests (e.g., robust parsing of tool/function outputs)
+├─ scripts/                    # Optional helper scripts
+├─ requirements.txt
+└─ README.md
+```
+
+> Tip: code paths and names above reflect the current prototype; adjust here if you rename files.
+
+---
+
+## Configuration
+
+DxO reads configuration from environment variables (preferably via a `.env` file in the repo root).
+
+| Variable         | Required | Purpose                                                                                                                                    |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OPENAI_API_KEY` | Yes      | Enables OpenAI model calls.                                                                                                                |
+| `GEMINI_API_KEY` | No       | Enables Google Gemini paths if present.                                                                                                    |
+| `MAI_DX_SECRET`  | No       | If set, DxO **encrypts saved sessions** using Fernet (symmetric encryption). If absent, sessions are saved unencrypted for easy debugging. |
+
+Example `.env` (Windows, append with `>>`):
+
+```bat
+echo OPENAI_API_KEY=sk-REPLACE_ME> .env
+echo GEMINI_API_KEY=REPLACE_ME>> .env
+echo MAI_DX_SECRET=REPLACE_ME_ANY_RANDOM_STRING>> .env
+```
+
+**Model selection.** The default models are wired in the code (see comments where the client is instantiated). You can change the model name(s) there if you want to try different providers/versions that support tool/function-calling.
+
+---
+
+## Using the Streamlit GUI
+
+1. **Start a new session**.
+2. The **agent panel** proposes the next action (ask for info or order a test).
+3. **You** enter findings/results (free text is fine).
+4. DxO updates the **differential** and shows **transparency panels** (agent rationales).
+5. Iterate until you’re satisfied; optionally **save** the session or **export** Markdown.
+
+What to type? Short, clinical, factual snippets work well:
+
+* *“22F, 2 days fever 38.5°C, sore throat, anterior nodes, no cough.”*
+* *“Rapid strep: positive.”*
+* *“No rash. Not pregnant.”*
+
+---
+
+## Saving, loading, and exports
+
+* **Save/Load sessions** from the UI. File names include a timestamp.
+* If `MAI_DX_SECRET` is set, session payloads are **encrypted**; otherwise they’re plain JSON for easy inspection.
+* **Export Markdown** to capture the case summary, differential timeline, and agent rationales.
+
+---
+
+## Testing
+
+```bat
+.\.venv\Scripts\activate
+pytest -q
+```
+
+---
+
+## Troubleshooting
+
+* **Streamlit not starting**: verify the venv is active and `pip install -r requirements.txt` ran without errors.
+* **API errors**: confirm your `.env` has a valid `OPENAI_API_KEY` (and `GEMINI_API_KEY` if using Gemini).
+* **Session files unreadable**: you likely saved with `MAI_DX_SECRET` set; keep the same secret to load them.
+* **Function/Tool output parsing issues**: run tests with `pytest -q` to confirm the parser behavior.
+
+---
+
+## License
+
+MIT (see `LICENSE` if present). This is a research prototype intended for local experimentation.
+
+---
+
