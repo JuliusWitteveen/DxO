@@ -160,10 +160,11 @@ def save_current_session():
     try:
         session_data = st.session_state.session.to_dict()
         session_id = st.session_state.session.session_id
-        save_session(session_data, session_id)
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.success(f"Session saved (ID: {session_id[:8]}...)")
+        session_data["saved_at"] = timestamp
+        save_session(session_data, session_id)
+
+        st.success(f"Session saved at {timestamp} (ID: {session_id[:8]}...)")
         return session_id
     except Exception as e:
         st.error(f"Failed to save session: {str(e)}")
