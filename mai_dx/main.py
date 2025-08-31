@@ -107,6 +107,15 @@ class Action(BaseModel):
 
 
 @dataclass
+class AgentResult:
+    """Standardized result from agent executions."""
+
+    success: bool
+    data: Any = None
+    error: Optional[str] = None
+
+
+@dataclass
 class CaseState:
     """Structured state management for the diagnostic process."""
 
@@ -373,14 +382,15 @@ class MaiDxOrchestrator:
         if need_reinit:
             self._init_agents()
 
-    def _safe_agent_run(self, agent: Agent, prompt: str) -> Any:
-        """Run an agent safely, logging any failures."""
+    def _safe_agent_run(self, agent: Agent, prompt: str) -> AgentResult:
+        """Run an agent safely, returning a standardized result."""
         time.sleep(self.request_delay)
         try:
-            return agent.run(prompt)
+            data = agent.run(prompt)
+            return AgentResult(success=True, data=data)
         except Exception as e:
             logger.error(f"Agent {agent.agent_name} run failed: {e}")
-            return f"Error: Agent run failed. {str(e)}"
+            return AgentResult(success=False, error=str(e))
 
     def _extract_function_call_output(
         self, agent_response: Any
@@ -435,23 +445,48 @@ class MaiDxOrchestrator:
     ) -> DeliberationState:
         """Gather analyses from individual panel agents."""
         deliberation_state = DeliberationState()
-        deliberation_state.hypothesis_analysis = self._safe_agent_run(
+        hypo_result = self._safe_agent_run(
             self.agents[AgentRole.HYPOTHESIS], base_context
+        )
+        deliberation_state.hypothesis_analysis = (
+            hypo_result.data if hypo_result.success else f"Error: {hypo_result.error}"
         )
         self._update_differential_from_text(
             case_state, deliberation_state.hypothesis_analysis
         )
-        deliberation_state.test_chooser_analysis = self._safe_agent_run(
+
+        test_result = self._safe_agent_run(
             self.agents[AgentRole.TEST_CHOOSER], base_context
         )
-        deliberation_state.challenger_analysis = self._safe_agent_run(
+        deliberation_state.test_chooser_analysis = (
+            test_result.data if test_result.success else f"Error: {test_result.error}"
+        )
+
+        challenger_result = self._safe_agent_run(
             self.agents[AgentRole.CHALLENGER], base_context
         )
-        deliberation_state.stewardship_analysis = self._safe_agent_run(
+        deliberation_state.challenger_analysis = (
+            challenger_result.data
+            if challenger_result.success
+            else f"Error: {challenger_result.error}"
+        )
+
+        stewardship_result = self._safe_agent_run(
             self.agents[AgentRole.STEWARDSHIP], base_context
         )
-        deliberation_state.checklist_analysis = self._safe_agent_run(
+        deliberation_state.stewardship_analysis = (
+            stewardship_result.data
+            if stewardship_result.success
+            else f"Error: {stewardship_result.error}"
+        )
+
+        checklist_result = self._safe_agent_run(
             self.agents[AgentRole.CHECKLIST], base_context
+        )
+        deliberation_state.checklist_analysis = (
+            checklist_result.data
+            if checklist_result.success
+            else f"Error: {checklist_result.error}"
         )
         return deliberation_state
 
@@ -463,8 +498,13 @@ class MaiDxOrchestrator:
     ) -> Action:
         """Derive the next action from deliberation and budget."""
         consensus_prompt = deliberation_state.to_consensus_prompt()
-        consensus_response = self._safe_agent_run(
+        consensus_result = self._safe_agent_run(
             self.agents[AgentRole.CONSENSUS], consensus_prompt
+        )
+        consensus_response = (
+            consensus_result.data
+            if consensus_result.success
+            else f"Error: {consensus_result.error}"
         )
 
         action_dict = self._extract_function_call_output(consensus_response)
@@ -557,7 +597,8 @@ class MaiDxOrchestrator:
             return "No interaction needed for 'diagnose' action."
         request = f"Request from Diagnostic Panel: {action.action_type} - {action.content}"
         prompt = f"Full Case Details (for your reference only):\n---\n{full_case_details}\n---\n\n{request}"
-        return self._safe_agent_run(self.agents[AgentRole.GATEKEEPER], prompt)
+        result = self._safe_agent_run(self.agents[AgentRole.GATEKEEPER], prompt)
+        return result.data if result.success else f"Error: {result.error}"
 
     def _estimate_cost(self, tests: Union[List[str], str]) -> int:
         """Estimate the cost of diagnostic tests."""
@@ -579,7 +620,8 @@ class MaiDxOrchestrator:
     ) -> Dict[str, Any]:
         """Use the Judge agent to evaluate the final diagnosis."""
         prompt = f"Ground Truth: '{ground_truth}'\nCandidate Diagnosis: '{candidate_diagnosis}'\n\nProvide Score (1-5) and Justification."
-        response = self._safe_agent_run(self.agents[AgentRole.JUDGE], prompt)
+        result = self._safe_agent_run(self.agents[AgentRole.JUDGE], prompt)
+        response = result.data if result.success else f"Error: {result.error}"
 
         if not isinstance(response, str):
             response = str(response)
