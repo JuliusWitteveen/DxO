@@ -32,7 +32,7 @@ from mai_dx.utils import resilient_parser
 # Dependencies are listed in requirements.txt and can be installed using
 # `pip install -r requirements.txt` or the `scripts/install_dependencies.py` script.
 try:
-    from swarms import Agent, Conversation
+    import swarms
     from dotenv import load_dotenv
 except ImportError as e:
     raise ImportError(
@@ -40,6 +40,18 @@ except ImportError as e:
         " Please install them with 'pip install -r requirements.txt' or run"
         " 'python scripts/install_dependencies.py'."
     ) from e
+
+missing_attrs = [attr for attr in ("Agent", "Conversation") if not hasattr(swarms, attr)]
+if missing_attrs:
+    raise ImportError(
+        "The 'swarms' package is missing required attributes: "
+        f"{', '.join(missing_attrs)}. This may occur if a local package named 'swarms'"
+        " is shadowing the intended external dependency. Please rename or remove any"
+        " local directories named 'swarms'."
+    )
+
+Agent = swarms.Agent
+Conversation = swarms.Conversation
 
 load_dotenv()
 
