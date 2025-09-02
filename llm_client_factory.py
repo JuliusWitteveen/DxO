@@ -1,30 +1,22 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-import os
-import sys
 
-def _use_responses_api(model: str) -> bool:
-    """
-    Determine which API to use based on model name.
-    
-    Responses API is used for:
-    - GPT-5 family (unified models with reasoning capabilities)
-    - O-series models (o1, o3, o4 reasoning models)
-    - GPT-4.1 family (enhanced instruction following)
-    
-    Chat Completions API is used for:
-    - GPT-4o family (optimized but traditional models)
-    - Legacy GPT-4 and GPT-3.5 models
-    """
-    m = (model or "").lower()
-    
-    # GPT-4o family uses traditional Chat Completions
-    if m.startswith("gpt-4o") or m.startswith("gpt-4-") or m.startswith("gpt-3"):
-        return False
-    
-    # All newer models use Responses API with reasoning support
-    # This includes GPT-5, o-series, and GPT-4.1 family
-    return True
+from model_api_selector import use_responses_api as _use_responses_api
+
+
+def _to_responses_format(messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Convert chat-style messages to the Responses API format."""
+
+    formatted: List[Dict[str, Any]] = []
+    if messages:
+        for msg in messages:
+            role = msg.get("role", "user")
+            text = msg.get("content", "")
+            formatted.append({
+                "role": role,
+                "content": [{"type": "input_text", "text": text}],
+            })
+    return formatted
 
 class LLMClient:
     """
@@ -96,16 +88,7 @@ class LLMClient:
         This includes GPT-5, o-series, and GPT-4.1 models.
         """
         # Convert chat messages to Responses API format
-        input_items = []
-        if messages:
-            for m in messages:
-                role = m.get("role", "user")
-                text = m.get("content", "")
-                # Responses API uses a different message structure
-                input_items.append({
-                    "role": role,
-                    "content": [{"type": "input_text", "text": text}]
-                })
+        input_items = _to_responses_format(messages)
 
         kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -123,18 +106,18 @@ class LLMClient:
             kwargs["reasoning"] = {"effort": self.reasoning_effort}
 
         try:
-            rsp = self._client.responses.create(**kwargs)
-            
-            # Extract text from response
-            text = getattr(rsp, "output_text", None)
+            response = self._client.responses.create(**kwargs)
+            assert response is not None, "Responses API returned no data"
+
+            text = getattr(response, "output_text", None)
             if not text:
                 # Try alternative response structure
                 try:
-                    text = rsp.output[0].content[0].text
+                    text = response.output[0].content[0].text
                 except Exception:
-                    text = str(rsp) if rsp else ""
-                    
-            return text, rsp
+                    text = str(response) if response else ""
+
+            return text, response
         except AttributeError:
             # Fallback if Responses API is not available
             print(f"Warning: Responses API not available for {self.model}, falling back to Chat Completions")
@@ -152,13 +135,14 @@ class LLMClient:
             chat_msgs.append({"role": "system", "content": system_prompt})
         chat_msgs.extend(messages or [{"role": "user", "content": ""}])
 
-        rsp = self._client.chat.completions.create(
+        response = self._client.chat.completions.create(
             model=self.model,
             messages=chat_msgs,
             temperature=self.temperature,
             top_p=self.top_p,
             max_tokens=self.max_tokens,
         )
-        
-        text = rsp.choices[0].message.content
-        return text, rsp
+
+        assert response.choices, "Chat API returned no choices"
+        text = response.choices[0].message.content
+        return text, response

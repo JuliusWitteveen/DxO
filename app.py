@@ -32,6 +32,21 @@ from mai_dx.ui import (
 st.set_page_config(layout="wide")
 load_dotenv()
 
+
+def _fmt_preview(x, limit=1000):
+    """Return a safe string preview of any value (handles dict/list/None)."""
+    try:
+        import json as _json
+        if x is None:
+            s = ""
+        elif isinstance(x, (str, bytes)):
+            s = x.decode() if isinstance(x, bytes) else x
+        else:
+            s = _json.dumps(x, indent=2, ensure_ascii=False)
+    except Exception:
+        s = str(x)
+    return s[:limit] + ("..." if len(s) > limit else "")
+
 def initialize_app_session():
     """Initialize Streamlit's session state with default values."""
     if 'session' not in st.session_state:
@@ -312,7 +327,7 @@ def main():
                     st.subheader("🧠 Agent Deliberations")
                     for agent_name, response in selected_turn.deliberation.items():
                         with st.expander(f"{agent_name}", expanded=False):
-                            st.text(response[:1000] + ("..." if len(response) > 1000 else ""))
+                            st.text(_fmt_preview(response))> 1000 else ""))
 
         with tab3:
             st.header("📊 Diagnostic Analytics")

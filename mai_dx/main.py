@@ -16,9 +16,10 @@ import sys
 import time
 import re
 import ast
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
@@ -32,7 +33,7 @@ from mai_dx.utils import resilient_parser
 # Dependencies are listed in requirements.txt and can be installed using
 # `pip install -r requirements.txt` or the `scripts/install_dependencies.py` script.
 try:
-    from swarms import Agent, Conversation
+    import swarms
     from dotenv import load_dotenv
 except ImportError as e:
     raise ImportError(
@@ -40,6 +41,18 @@ except ImportError as e:
         " Please install them with 'pip install -r requirements.txt' or run"
         " 'python scripts/install_dependencies.py'."
     ) from e
+
+missing_attrs = [attr for attr in ("Agent", "Conversation") if not hasattr(swarms, attr)]
+if missing_attrs:
+    raise ImportError(
+        "The 'swarms' package is missing required attributes: "
+        f"{', '.join(missing_attrs)}. This may occur if a local package named 'swarms'"
+        " is shadowing the intended external dependency. Please rename or remove any"
+        " local directories named 'swarms'."
+    )
+
+Agent = swarms.Agent
+Conversation = swarms.Conversation
 
 load_dotenv()
 
@@ -389,15 +402,39 @@ class MaiDxOrchestrator:
         if need_reinit:
             self._init_agents()
 
-    def _safe_agent_run(self, agent: Agent, prompt: str) -> AgentResult:
-        """Run an agent safely, returning a standardized result."""
-        time.sleep(self.request_delay)
-        try:
-            data = agent.run(prompt)
-            return AgentResult(success=True, data=data)
-        except Exception as e:
-            logger.error(f"Agent {agent.agent_name} run failed: {e}")
-            return AgentResult(success=False, error=str(e))
+    def _safe_agent_run(
+        self,
+        agent: Agent,
+        prompt: str,
+        *,
+        timeout: float = 30.0,
+        retries: int = 1,
+        backoff_base: float = 0.1,
+    ) -> AgentResult:
+        """Run an agent with timeout and retry/backoff."""
+        attempt = 0
+        last_error: Optional[str] = None
+        while attempt <= retries:
+            time.sleep(self.request_delay)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(agent.run, prompt)
+                try:
+                    data = future.result(timeout=timeout)
+                    return AgentResult(success=True, data=data)
+                except Exception as e:  # captures TimeoutError and others
+                    if isinstance(e, FuturesTimeout):
+                        last_error = "timeout"
+                    else:
+                        last_error = str(e)
+                    logger.error(
+                        f"Agent {agent.agent_name} run failed on attempt {attempt + 1}: {e}"
+                    )
+                    future.cancel()
+            attempt += 1
+            if attempt <= retries:
+                sleep_for = random.uniform(0, backoff_base * (2 ** (attempt - 1)))
+                time.sleep(sleep_for)
+        return AgentResult(success=False, error=last_error)
 
     def _extract_function_call_output(
         self, agent_response: Any
@@ -675,7 +712,7 @@ class MaiDxOrchestrator:
             return "No interaction needed for 'diagnose' action."
         request = f"Request from Diagnostic Panel: {action.action_type} - {action.content}"
         prompt = f"Full Case Details (for your reference only):\n---\n{full_case_details}\n---\n\n{request}"
-        result = self._safe_agent_run(self.agents[AgentRole.GATEKeeper], prompt)
+        result = self._safe_agent_run(self.agents[AgentRole.GATEKEEPER], prompt)
         return result.data if result.success else f"Error: {result.error}"
 
     def _judge_diagnosis(
