@@ -249,6 +249,7 @@ class MaiDxOrchestrator:
         self.mode = mode
         self.physician_visit_cost = physician_visit_cost
         self.request_delay = request_delay
+        self.top_p = 1.0  # Default value, will be used by compatible models
 
         # Initialize the test cost database, allowing overrides for customization
         if test_costs is not None:
@@ -293,6 +294,29 @@ class MaiDxOrchestrator:
                 },
             },
         }
+        
+        judge_tool = {
+            "type": "function",
+            "function": {
+                "name": "evaluate_diagnosis",
+                "description": "Evaluate the final diagnosis against the ground truth.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "score": {
+                            "type": "number",
+                            "description": "Accuracy score from 1 (Incorrect) to 5 (Perfect)",
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Concise justification for the score",
+                        },
+                    },
+                    "required": ["score", "reasoning"],
+                },
+            },
+        }
+
         self.agents = {}
         failed_roles: List[str] = []
         for role in AgentRole:
@@ -305,8 +329,16 @@ class MaiDxOrchestrator:
                 "max_tokens": max_tokens,
                 "temperature": 0.1,
             }
+            # Add top_p only for compatible models (legacy chat completions)
+            m = self.model_name.lower()
+            if m.startswith("gpt-4o") or m.startswith("gpt-4-") or m.startswith("gpt-3"):
+                 agent_args["top_p"] = self.top_p
+
             if role == AgentRole.CONSENSUS:
                 agent_args["tools_list_dictionary"] = [consensus_tool]
+                agent_args["tool_choice"] = "auto"
+            elif role == AgentRole.JUDGE:
+                agent_args["tools_list_dictionary"] = [judge_tool]
                 agent_args["tool_choice"] = "auto"
 
             try:
@@ -377,46 +409,69 @@ class MaiDxOrchestrator:
         if not agent_response:
             return None
 
-        # Recursively search for a dictionary that looks like our Action model.
-        def find_action_dict(data: Any) -> Optional[Dict[str, Any]]:
+        # Helper to validate if a dictionary has the required keys for an Action
+        def is_action_dict(data: Any) -> bool:
+            return isinstance(data, dict) and all(
+                k in data for k in ("action_type", "content", "reasoning")
+            )
+
+        # Path 1: The response is already a dictionary that looks like an action
+        if is_action_dict(agent_response):
+            return agent_response
+
+        # Path 2: The entire response is a string that might contain a JSON/dict
+        if isinstance(agent_response, str):
+            match = re.search(r'\{.*\}', agent_response, re.DOTALL)
+            if match:
+                parsed_string = resilient_parser(match.group(0))
+                # Check for either Action or Judge tool format
+                if parsed_string and (
+                    is_action_dict(parsed_string) or
+                    all(k in parsed_string for k in ("score", "reasoning"))
+                ):
+                    return parsed_string
+
+        # Path 3: A general recursive search for a valid action dictionary as a fallback
+        def find_action_recursive(data: Any) -> Optional[Dict[str, Any]]:
+            # Check for either Action or Judge tool format
+            if isinstance(data, dict) and (
+                is_action_dict(data) or
+                all(k in data for k in ("score", "reasoning"))
+            ):
+                return data
+            
+            # If the dict contains 'arguments', try parsing them
             if isinstance(data, dict):
-                if all(k in data for k in ("action_type", "content", "reasoning")):
-                    return data
-                for key in ("arguments", "function", "tool_calls"):
-                    if key in data:
-                        result = find_action_dict(data[key])
-                        if result:
-                            return result
+                args = data.get("arguments")
+                if isinstance(args, str):
+                    parsed_args = resilient_parser(args)
+                    if parsed_args and (
+                        is_action_dict(parsed_args) or
+                        all(k in parsed_args for k in ("score", "reasoning"))
+                    ):
+                        return parsed_args
+                elif isinstance(args, dict) and (
+                    is_action_dict(args) or
+                    all(k in args for k in ("score", "reasoning"))
+                ):
+                    return args
+
+            # Recurse through nested structures
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    found = find_action_recursive(value)
+                    if found:
+                        return found
             elif isinstance(data, list):
                 for item in data:
-                    result = find_action_dict(item)
-                    if result:
-                        return result
+                    found = find_action_recursive(item)
+                    if found:
+                        return found
             return None
 
-        try:
-            # 1. If the response is a string, find and parse the JSON/dict part.
-            if isinstance(agent_response, str):
-                match = re.search(r'\{.*\}', agent_response, re.DOTALL)
-                if match:
-                    parsed = resilient_parser(match.group(0))
-                    return find_action_dict(parsed) if parsed else None
-
-            # 2. Perform recursive search on the structured response.
-            action_dict = find_action_dict(agent_response)
-            if not action_dict:
-                return None
-
-            # 3. If 'arguments' key contains a string, parse it.
-            if 'arguments' in action_dict and isinstance(action_dict['arguments'], str):
-                return resilient_parser(action_dict['arguments'])
-
+        action_dict = find_action_recursive(agent_response)
+        if action_dict:
             return action_dict
-
-        except Exception as e:
-            logger.warning(
-                f"Unexpected error during function call extraction: {e}. Response: {agent_response}"
-            )
 
         logger.error(f"Could not find valid arguments in response: {agent_response}")
         return None
@@ -620,37 +675,35 @@ class MaiDxOrchestrator:
             return "No interaction needed for 'diagnose' action."
         request = f"Request from Diagnostic Panel: {action.action_type} - {action.content}"
         prompt = f"Full Case Details (for your reference only):\n---\n{full_case_details}\n---\n\n{request}"
-        result = self._safe_agent_run(self.agents[AgentRole.GATEKEEPER], prompt)
+        result = self._safe_agent_run(self.agents[AgentRole.GATEKeeper], prompt)
         return result.data if result.success else f"Error: {result.error}"
 
     def _judge_diagnosis(
         self, candidate_diagnosis: str, ground_truth: str
     ) -> Dict[str, Any]:
         """Use the Judge agent to evaluate the final diagnosis."""
-        prompt = f"Ground Truth: '{ground_truth}'\nCandidate Diagnosis: '{candidate_diagnosis}'\n\nProvide Score (1-5) and Justification."
+        prompt = f"""
+        Please evaluate the following diagnosis against the ground truth.
+        Ground Truth: '{ground_truth}'
+        Candidate Diagnosis: '{candidate_diagnosis}'
+        Use the `evaluate_diagnosis` function to provide your score and justification.
+        """
         result = self._safe_agent_run(self.agents[AgentRole.JUDGE], prompt)
-        response = result.data if result.success else f"Error: {result.error}"
 
-        if not isinstance(response, str):
-            response = str(response)
+        if not result.success:
+            logger.error(f"Judge agent run failed: {result.error}")
+            return {"score": 0.0, "reasoning": "Judge agent failed to run."}
 
-        try:
-            score_match = re.search(
-                r"Score:\s*(\d\.?\d*)", response, re.IGNORECASE
-            )
-            score = float(score_match.group(1)) if score_match else 0.0
-            justification_match = re.search(
-                r"Justification:\s*(.*)", response, re.IGNORECASE | re.DOTALL
-            )
-            reasoning = (
-                justification_match.group(1).strip()
-                if justification_match
-                else response
-            )
-        except Exception as e:
-            logger.error(f"Error parsing judge response: {e}")
-            score, reasoning = 0.0, "Could not parse judge's response."
-        return {"score": score, "reasoning": reasoning}
+        judgement = self._extract_function_call_output(result.data)
+
+        if not judgement or "score" not in judgement or "reasoning" not in judgement:
+            logger.error(f"Failed to extract structured evaluation from Judge agent. Full response: {result.data}")
+            return {"score": 0.0, "reasoning": "Could not parse judge's response."}
+
+        return {
+            "score": float(judgement.get("score", 0.0)),
+            "reasoning": str(judgement.get("reasoning", "No reasoning provided.")),
+        }
 
     def run(
         self,

@@ -111,7 +111,7 @@ class LLMClient:
             "model": self.model,
             "input": input_items if input_items else " ",
             "temperature": self.temperature,
-            "top_p": self.top_p,
+            # top_p is NOT supported by the Responses API, so it is omitted.
             "max_output_tokens": self.max_tokens,  # Note: different parameter name
         }
         

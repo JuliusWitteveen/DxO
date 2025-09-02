@@ -31,11 +31,9 @@ from mai_dx.ui import (
 
 st.set_page_config(layout="wide")
 load_dotenv()
-SETTINGS = render_settings_panel()
 
-
-def main():
-
+def initialize_app_session():
+    """Initialize Streamlit's session state with default values."""
     if 'session' not in st.session_state:
         st.session_state.session = None
     if 'visualization_components' not in st.session_state:
@@ -48,6 +46,10 @@ def main():
             'explorer': InteractiveExplorer(),
             'confidence': ConfidenceCalibration(),
         }
+
+def main():
+    initialize_app_session()
+    SETTINGS = render_settings_panel()
 
     st.markdown('<h1 class="main-header">🏥 MAI-DxO Interactive Diagnostic Tool</h1>', unsafe_allow_html=True)
     api_key_is_set = is_api_key_set()
@@ -280,7 +282,10 @@ def main():
                 # Confidence timeline mini-chart
                 if len(st.session_state.session.turns) > 1:
                     st.subheader("📈 Confidence Trend")
-                    fig = create_confidence_timeline(st.session_state.session)
+                    # Serialize turns to JSON to make it hashable for caching
+                    session_dict = st.session_state.session.to_dict()
+                    turns_json = json.dumps(session_dict.get("turns", []))
+                    fig = create_confidence_timeline(turns_json)
                     st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
@@ -313,7 +318,9 @@ def main():
             st.header("📊 Diagnostic Analytics")
 
             # Diagnostic journey visualization
-            fig = create_diagnostic_journey_visualization(st.session_state.session)
+            session_dict = st.session_state.session.to_dict()
+            turns_json = json.dumps(session_dict.get("turns", []))
+            fig = create_diagnostic_journey_visualization(turns_json)
             st.plotly_chart(fig, use_container_width=True)
 
             # Confidence analysis
@@ -339,7 +346,7 @@ def main():
             """
             <div style="text-align: center; color: #666;">
                 Built with ❤️ using MAI-DxO Framework | 
-                <a href="https://github.com/The-Swarm-Corporation/Open-MAI-Dx-Orchestrator" target="_blank">GitHub</a> | 
+                <a href="https://github.com/The-Swarm-Corporation/Open-MAI-Dx-Orcherstrator" target="_blank">GitHub</a> | 
                 <a href="https://arxiv.org/abs/2306.022405" target="_blank">Paper</a>
             </div>
             """,

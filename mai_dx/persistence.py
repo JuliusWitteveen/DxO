@@ -40,6 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - executed in minimal environmen
     )
 
 SESSION_DIR = "sessions"
+SESSION_INDEX_FILE = os.path.join(SESSION_DIR, "session_index.json")
 os.makedirs(SESSION_DIR, exist_ok=True)
 
 # Load environment variables from a .env file if present.
@@ -58,36 +59,57 @@ if _FERNET_KEY is None:
 _FERNET = Fernet(_FERNET_KEY.encode())
 
 
+def _read_index() -> Dict[str, Any]:
+    """Reads the session index from disk."""
+    if not os.path.exists(SESSION_INDEX_FILE):
+        return {}
+    try:
+        with open(SESSION_INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_index(index_data: Dict[str, Any]) -> None:
+    """Writes the session index to disk."""
+    try:
+        with open(SESSION_INDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump(index_data, f, indent=2)
+    except OSError as e:
+        logging.error(f"Failed to write session index: {e}")
+
+
+def _update_index(session_id: str, session_data: Dict[str, Any]):
+    """Update the index with metadata for a single session."""
+    index = _read_index()
+    mtime = datetime.now().timestamp()
+    metadata = {
+        "id": session_id,
+        "initial_vignette": session_data.get("case_state", {}).get(
+            "initial_vignette", "N/A"
+        ),
+        "last_modified": datetime.fromtimestamp(mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "turns": len(session_data.get("turns", [])),
+        "is_complete": session_data.get("is_complete", False),
+    }
+    index[session_id] = metadata
+    _write_index(index)
+
+
 def save_session(session_data: Dict[str, Any], session_id: str) -> None:
-    """Persist a session dictionary to an encrypted JSON file.
-
-    Args:
-        session_data: Data representing the session.
-        session_id: Identifier used for the output filename.
-
-    Returns:
-        None
-    """
+    """Persist a session dictionary to an encrypted JSON file."""
     filepath = os.path.join(SESSION_DIR, f"{session_id}.json")
     json_str = json.dumps(session_data, indent=2).encode("utf-8")
     encrypted = _FERNET.encrypt(json_str)
     with open(filepath, "wb") as f:
         f.write(encrypted)
+    _update_index(session_id, session_data)
 
 
 def load_session(session_id: str) -> Dict[str, Any]:
-    """Load and decrypt a session dictionary from disk.
-
-    Args:
-        session_id: Identifier of the session to load.
-
-    Returns:
-        The decrypted session data.
-
-    Raises:
-        FileNotFoundError: If the session file does not exist.
-        ValueError: If the file cannot be decrypted.
-    """
+    """Load and decrypt a session dictionary from disk."""
     filepath = os.path.join(SESSION_DIR, f"{session_id}.json")
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Session file not found: {filepath}")
@@ -95,7 +117,10 @@ def load_session(session_id: str) -> Dict[str, Any]:
         encrypted = f.read()
     try:
         decrypted = _FERNET.decrypt(encrypted)
-        return json.loads(decrypted.decode("utf-8"))
+        session_data = json.loads(decrypted.decode("utf-8"))
+        # Ensure the index is up-to-date upon loading a session
+        _update_index(session_id, session_data)
+        return session_data
     except Exception as e:
         raise ValueError(
             f"Failed to decrypt session '{session_id}': {e}"
@@ -103,50 +128,20 @@ def load_session(session_id: str) -> Dict[str, Any]:
 
 
 def list_sessions() -> List[Dict[str, Any]]:
-    """List metadata for all saved sessions.
-
-    Returns:
-        A list of dictionaries containing session metadata such as ID,
-        initial vignette, last modified timestamp, and completion status.
-    """
-    sessions: List[Dict[str, Any]] = []
-    files = [f for f in os.listdir(SESSION_DIR) if f.endswith(".json")]
-    files.sort(
-        key=lambda f: os.path.getmtime(os.path.join(SESSION_DIR, f)),
-        reverse=True,
-    )
-    for filename in files:
-        try:
-            session_id = filename.replace(".json", "")
-            data = load_session(session_id)
-            mtime = os.path.getmtime(os.path.join(SESSION_DIR, filename))
-            sessions.append(
-                {
-                    "id": session_id,
-                    "initial_vignette": data.get("case_state", {}).get(
-                        "initial_vignette", "N/A"
-                    ),
-                    "last_modified": datetime.fromtimestamp(mtime).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-                    "turns": len(data.get("turns", [])),
-                    "is_complete": data.get("is_complete", False),
-                }
-            )
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logging.warning(f"Could not load session file {filename}: {e}")
+    """List metadata for all saved sessions from the index."""
+    index = _read_index()
+    sessions = list(index.values())
+    sessions.sort(key=lambda s: s.get("last_modified", ""), reverse=True)
     return sessions
 
 
 def delete_session(session_id: str) -> None:
-    """Remove a session file from disk.
-
-    Args:
-        session_id: Identifier of the session to delete.
-
-    Returns:
-        None
-    """
+    """Remove a session file and its corresponding index entry."""
     filepath = os.path.join(SESSION_DIR, f"{session_id}.json")
     if os.path.exists(filepath):
         os.remove(filepath)
+    
+    index = _read_index()
+    if session_id in index:
+        del index[session_id]
+        _write_index(index)

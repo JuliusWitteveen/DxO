@@ -22,7 +22,7 @@ def get_prompt_for_role(
         AgentRole.CHECKLIST: "You are Dr. Checklist. Perform quality control. Ensure test names are valid and reasoning is consistent. Flag logical errors or contradictions.",
         AgentRole.CONSENSUS: "You are the Consensus Coordinator. Synthesize all panel input. Decide the single best next action: 'ask', 'test', or 'diagnose'. You MUST call the `make_consensus_decision` function with your final decision.",
         AgentRole.GATEKEEPER: "You are the Gatekeeper, the clinical information oracle. Provide objective, specific clinical findings when explicitly requested. Do not provide hints or interpretations.",
-        AgentRole.JUDGE: "You are the Judge. Evaluate a candidate diagnosis against a ground truth using a 5-point Likert scale (5=Perfect, 1=Incorrect). Provide a score and a concise justification.",
+        AgentRole.JUDGE: "You are the Judge. Evaluate a candidate diagnosis against a ground truth. You MUST call the `evaluate_diagnosis` function with your analysis, providing a score from 1 (Incorrect) to 5 (Perfect) and a concise justification for that score.",
     }
     base_prompt = prompts[role]
 

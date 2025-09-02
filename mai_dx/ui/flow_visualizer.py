@@ -1,5 +1,6 @@
 """Visualization components for diagnostic flows and analytics."""
 
+import json
 from typing import Dict, List, Any
 
 import numpy as np
@@ -46,13 +47,14 @@ class DiagnosticFlowVisualizer:
         return fig
 
 
-def _add_confidence_trace(fig: go.Figure, turns_data: List[Any]):
+def _add_confidence_trace(fig: go.Figure, turns_data: List[Dict[str, Any]]):
     """Adds the confidence evolution trace to the subplot."""
-    turn_numbers = [getattr(t, "turn_number", i + 1) for i, t in enumerate(turns_data)]
+    turn_numbers = [t.get("turn_number", i + 1) for i, t in enumerate(turns_data)]
     confidences = []
     for t in turns_data:
-        if hasattr(t, "differential_at_turn") and t.differential_at_turn:
-            confidences.append(max(t.differential_at_turn.values()))
+        differential = t.get("differential_at_turn", {})
+        if differential:
+            confidences.append(max(differential.values()))
         else:
             confidences.append(0)
 
@@ -71,10 +73,10 @@ def _add_confidence_trace(fig: go.Figure, turns_data: List[Any]):
     )
 
 
-def _add_cost_trace(fig: go.Figure, turns_data: List[Any]):
+def _add_cost_trace(fig: go.Figure, turns_data: List[Dict[str, Any]]):
     """Adds the cost accumulation trace to the subplot."""
-    turn_numbers = [getattr(t, "turn_number", i + 1) for i, t in enumerate(turns_data)]
-    costs = [getattr(t, "cost_at_turn", 0) for t in turns_data]
+    turn_numbers = [t.get("turn_number", i + 1) for i, t in enumerate(turns_data)]
+    costs = [t.get("cost_at_turn", 0) for t in turns_data]
 
     fig.add_trace(
         go.Scatter(
@@ -91,13 +93,14 @@ def _add_cost_trace(fig: go.Figure, turns_data: List[Any]):
     )
 
 
-def _add_differential_timeline_trace(fig: go.Figure, turns_data: List[Any]):
+def _add_differential_timeline_trace(fig: go.Figure, turns_data: List[Dict[str, Any]]):
     """Adds the differential diagnosis timeline traces to the subplot."""
     all_diagnoses: Dict[str, List[tuple]] = {}
     for i, turn in enumerate(turns_data):
-        if hasattr(turn, "differential_at_turn") and turn.differential_at_turn:
-            turn_num = getattr(turn, "turn_number", i + 1)
-            for diag, prob in turn.differential_at_turn.items():
+        differential = turn.get("differential_at_turn", {})
+        if differential:
+            turn_num = turn.get("turn_number", i + 1)
+            for diag, prob in differential.items():
                 all_diagnoses.setdefault(diag, []).append((turn_num, prob))
 
     for diag, points in all_diagnoses.items():
@@ -116,12 +119,13 @@ def _add_differential_timeline_trace(fig: go.Figure, turns_data: List[Any]):
         )
 
 
-def _add_action_distribution_trace(fig: go.Figure, turns_data: List[Any]):
+def _add_action_distribution_trace(fig: go.Figure, turns_data: List[Dict[str, Any]]):
     """Adds the action distribution pie chart to the subplot."""
     action_counts = {"ask": 0, "test": 0, "diagnose": 0}
     for turn in turns_data:
-        if hasattr(turn, "action_request") and hasattr(turn.action_request, "action_type"):
-            action_type = turn.action_request.action_type
+        action_request = turn.get("action_request", {})
+        if action_request:
+            action_type = action_request.get("action_type")
             if action_type in action_counts:
                 action_counts[action_type] += 1
 
@@ -138,7 +142,7 @@ def _add_action_distribution_trace(fig: go.Figure, turns_data: List[Any]):
 
 
 @st.cache_data
-def create_diagnostic_journey_visualization(session):
+def create_diagnostic_journey_visualization(turns_json: str):
     """Create visualizations summarizing the diagnostic journey."""
     fig = make_subplots(
         rows=2,
@@ -157,7 +161,9 @@ def create_diagnostic_journey_visualization(session):
         horizontal_spacing=0.15,
     )
 
-    if not session or not hasattr(session, "turns") or not session.turns:
+    turns = json.loads(turns_json) if turns_json else []
+
+    if not turns:
         fig.add_annotation(
             text="No data available yet",
             xref="paper",
@@ -170,7 +176,6 @@ def create_diagnostic_journey_visualization(session):
         fig.update_layout(height=700, showlegend=False)
         return fig
 
-    turns = session.turns
     _add_confidence_trace(fig, turns)
     _add_cost_trace(fig, turns)
     _add_differential_timeline_trace(fig, turns)
@@ -187,9 +192,11 @@ def create_diagnostic_journey_visualization(session):
     return fig
 
 
-def create_confidence_timeline(session):
+def create_confidence_timeline(turns_json: str):
     """Plot confidence and cost trends across turns."""
-    if not session or not hasattr(session, "turns") or not session.turns:
+    turns = json.loads(turns_json) if turns_json else []
+
+    if not turns:
         fig = go.Figure()
         fig.add_annotation(
             text="No data available yet",
@@ -204,23 +211,21 @@ def create_confidence_timeline(session):
         return fig
 
     fig = go.Figure()
-    for i, turn in enumerate(session.turns):
+    for i, turn in enumerate(turns):
         colors = {"ask": "blue", "test": "orange", "diagnose": "green"}
-        action_type = "unknown"
-        action_content = "No action"
-        if hasattr(turn, "action_request"):
-            if hasattr(turn.action_request, "action_type"):
-                action_type = turn.action_request.action_type
-            if hasattr(turn.action_request, "content"):
-                action_content = str(turn.action_request.content)[:100]
+        action_request = turn.get("action_request", {})
+        action_type = action_request.get("action_type", "unknown")
+        action_content = str(action_request.get("content", "No action"))[:100]
+
 
         leading_diag = "None"
         confidence = 0
-        if hasattr(turn, "differential_at_turn") and turn.differential_at_turn:
-            max_item = max(turn.differential_at_turn.items(), key=lambda x: x[1])
+        differential = turn.get("differential_at_turn", {})
+        if differential:
+            max_item = max(differential.items(), key=lambda x: x[1])
             leading_diag, confidence = max_item
 
-        cost = getattr(turn, "cost_at_turn", 0)
+        cost = turn.get("cost_at_turn", 0)
 
         fig.add_trace(
             go.Scatter(
