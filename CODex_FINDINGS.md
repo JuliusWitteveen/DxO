@@ -66,6 +66,93 @@ S-->>UI: display next request
 3. Actions/tests update cost and differential; in autonomous mode the Gatekeeper supplies responses.
 4. Session snapshots are encrypted and written to `sessions/` via `persistence.save_session`.
 
+## Motor
+### MaiDxOrchestrator.run – autonomous loop
+```mermaid
+sequenceDiagram
+participant R as run()
+participant T as _perform_turn
+participant G as Gatekeeper
+participant J as Judge
+R->>T: derive Action
+alt action == diagnose
+    T-->>R: final diagnosis
+else
+    R->>G: send action
+    G-->>R: response
+end
+R->>J: evaluate
+R-->>Caller: DiagnosisResult
+```
+**Data contract**
+- **Inputs**: `initial_case_info` (str), `full_case_details` (str), `ground_truth_diagnosis` (str).
+- **Output**: `DiagnosisResult` with final diagnosis, score, cost, iterations.
+- **Errors**: gatekeeper/Judge failures return placeholder strings; no retries or timeouts.
+**State transitions**
+```mermaid
+stateDiagram-v2
+    [*] --> Iterating
+    Iterating --> Diagnosed: action==diagnose
+    Iterating --> BudgetExceeded: cost>=initial_budget
+    Iterating --> MaxIters: i>=max_iterations
+    Diagnosed --> Evaluated
+    BudgetExceeded --> Evaluated
+    MaxIters --> Evaluated
+    Evaluated --> [*]
+```
+**Concurrency & back-pressure** – sequential loop; each iteration invokes `_perform_turn` then optional Gatekeeper call. Agent calls inside `_perform_turn` are delayed by `request_delay` but lack rate-limit back-pressure.
+**Hazards** – forced diagnosis when budget exceeded; Gatekeeper role misnaming (`GATEKeeper`) can raise `AttributeError`; external calls lack timeout/retry, so a hung LLM blocks progress【F:mai_dx/main.py†L720-L783】【F:mai_dx/main.py†L690-L704】.
+
+### MaiDxOrchestrator._perform_turn – per-turn deliberation
+```mermaid
+sequenceDiagram
+participant P as _perform_turn
+participant C as _collect_panel_deliberation
+participant D as _determine_next_action
+P->>P: build_base_context
+P->>C: gather analyses
+C-->>P: DeliberationState
+P->>D: decide action
+D-->>P: Action
+P-->>Caller: (Action, DeliberationState)
+```
+**Data contract**
+- **Input**: `CaseState` with vignette, cost, differential etc.
+- **Output**: `(Action, DeliberationState)`.
+- **Errors**: if Hypothesis agent fails → RuntimeError triggers fallback `ask`; other agent failures store placeholder text.
+**State transitions** – context built → agents deliberate → stagnation check → consensus action → optional correction for mode/budget → return.
+**Concurrency & back-pressure** – Hypothesis runs first; remaining four agents execute in a `ThreadPoolExecutor` without timeouts【F:mai_dx/main.py†L528-L548】. Each agent call sleeps for `request_delay` but no batching or retry【F:mai_dx/main.py†L404-L412】.
+**Hazards** – parallel agent calls may exceed rate limits; differential update parsing can fail silently; stagnation detection relies on last actions and may miss nuanced repetition【F:mai_dx/main.py†L590-L638】.
+
+### InteractiveDxSession.step / _next_turn – interactive handler
+```mermaid
+sequenceDiagram
+participant UI as Streamlit UI
+participant S as step()
+participant N as _next_turn
+participant O as _perform_turn
+UI->>S: physician_input, ui_turn
+S->>S: validate turn
+S->>S: update CaseState
+S->>N: advance
+N->>O: _perform_turn(case_state)
+O-->>N: Action + deliberation
+N-->>UI: next request
+```
+**Data contract**
+- **step inputs**: `physician_input` (str), `ui_turn_number` (int); raises `ValueError` if mismatch or session complete.
+- **step output**: None; side-effects mutate `CaseState` and append `Turn`.
+**State transitions**
+```mermaid
+stateDiagram-v2
+    Idle --> Active: start()
+    Active --> Active: step()
+    Active --> Complete: action.action_type==diagnose
+    Complete --> [*]
+```
+**Concurrency & back-pressure** – strictly sequential; each call persists to disk; no throttling around `_perform_turn`.
+**Hazards** – UI/session turn mismatch raises error requiring page refresh; persistent storage errors are surfaced via Streamlit; LLM failures propagate into session turns with minimal recovery【F:mai_dx/interactive.py†L70-L106】【F:mai_dx/interactive.py†L107-L144】.
+
 ## Configuration & IO Map
 - **Environment variables**: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MAI_DX_SECRET` for session encryption, `MAIDX_DEBUG` for verbose logs【F:README.md†L48-L55】【F:mai_dx/persistence.py†L46-L59】
 - **Files**: `.env` for keys, `sessions/*.json` (encrypted), optional `logs/` for debug output.
