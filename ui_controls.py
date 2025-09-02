@@ -1,6 +1,7 @@
 from __future__ import annotations
 import streamlit as st
 from config import OPENAI_MODELS, DEFAULT_UI_SETTINGS
+from llm_client_factory import _use_responses_api
 
 def _init_session() -> None:
     """Initialize session state with default settings if not already present."""
@@ -39,26 +40,33 @@ def render_settings_panel() -> dict:
         help="Select the OpenAI model. GPT-5 and o-series models support advanced reasoning."
     )
 
+    # Determine which API this model requires
+    use_responses_api = _use_responses_api(model_name)
+
     # Temperature slider - controls randomness
     temperature = st.sidebar.slider(
-        "Temperature", 
-        0.0, 
-        2.0, 
-        float(current["temperature"]), 
+        "Temperature",
+        0.0,
+        2.0,
+        float(current["temperature"]),
         0.05,
-        help="Higher values make the output more creative but less predictable. For medical diagnosis, lower values (0.3-0.7) are recommended."
+        help="Higher values make the output more creative but less predictable. For medical diagnosis, lower values (0.3-0.7) are recommended.",
     )
-    
-    # Top-p slider - nucleus sampling
-    top_p = st.sidebar.slider(
-        "Top-p", 
-        0.0, 
-        1.0, 
-        float(current["top_p"]), 
-        0.01,
-        help="Controls diversity via nucleus sampling. 1.0 considers all options. Lower values focus on more likely tokens."
-    )
-    
+
+    # Top-p slider - nucleus sampling (only for Chat Completions models)
+    top_p = current.get("top_p", 1.0)
+    if not use_responses_api:
+        top_p = st.sidebar.slider(
+            "Top-p",
+            0.0,
+            1.0,
+            float(top_p),
+            0.01,
+            help="Controls diversity via nucleus sampling. 1.0 considers all options. Lower values focus on more likely tokens.",
+        )
+    else:
+        st.sidebar.info("Top-p is not available for this model.")
+
     # Max tokens - output length limit
     # GPT-5 supports up to 128,000 output tokens
     max_limit = 128000 if model_name.startswith("gpt-5") else 32768
@@ -115,15 +123,20 @@ def render_settings_panel() -> dict:
     )
 
     # Update the session state with current values
-    current.update({
+    update_data = {
         "model_name": model_name,
         "temperature": float(temperature),
-        "top_p": float(top_p),
         "max_tokens": int(max_tokens),
         "reasoning_effort": reasoning_effort,
         "system_prompt": system_prompt,
         "save_settings_with_session": bool(save_with_session),
-    })
+    }
+    if not use_responses_api:
+        update_data["top_p"] = float(top_p)
+    else:
+        current.pop("top_p", None)
+
+    current.update(update_data)
     st.session_state.dxo_settings = current
 
     # Model capabilities indicator
