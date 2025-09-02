@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -99,12 +100,20 @@ def _update_index(session_id: str, session_data: Dict[str, Any]):
 
 
 def save_session(session_data: Dict[str, Any], session_id: str) -> None:
-    """Persist a session dictionary to an encrypted JSON file."""
+    """Persist a session dictionary to an encrypted JSON file atomically."""
     filepath = os.path.join(SESSION_DIR, f"{session_id}.json")
     json_str = json.dumps(session_data, indent=2).encode("utf-8")
     encrypted = _FERNET.encrypt(json_str)
-    with open(filepath, "wb") as f:
-        f.write(encrypted)
+    fd, tmp_path = tempfile.mkstemp(dir=SESSION_DIR, prefix="tmp_session_")
+    try:
+        with os.fdopen(fd, "wb") as tmp_file:
+            tmp_file.write(encrypted)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, filepath)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     _update_index(session_id, session_data)
 
 

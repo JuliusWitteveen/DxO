@@ -16,9 +16,10 @@ import sys
 import time
 import re
 import ast
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
@@ -401,15 +402,39 @@ class MaiDxOrchestrator:
         if need_reinit:
             self._init_agents()
 
-    def _safe_agent_run(self, agent: Agent, prompt: str) -> AgentResult:
-        """Run an agent safely, returning a standardized result."""
-        time.sleep(self.request_delay)
-        try:
-            data = agent.run(prompt)
-            return AgentResult(success=True, data=data)
-        except Exception as e:
-            logger.error(f"Agent {agent.agent_name} run failed: {e}")
-            return AgentResult(success=False, error=str(e))
+    def _safe_agent_run(
+        self,
+        agent: Agent,
+        prompt: str,
+        *,
+        timeout: float = 30.0,
+        retries: int = 1,
+        backoff_base: float = 0.1,
+    ) -> AgentResult:
+        """Run an agent with timeout and retry/backoff."""
+        attempt = 0
+        last_error: Optional[str] = None
+        while attempt <= retries:
+            time.sleep(self.request_delay)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(agent.run, prompt)
+                try:
+                    data = future.result(timeout=timeout)
+                    return AgentResult(success=True, data=data)
+                except Exception as e:  # captures TimeoutError and others
+                    if isinstance(e, FuturesTimeout):
+                        last_error = "timeout"
+                    else:
+                        last_error = str(e)
+                    logger.error(
+                        f"Agent {agent.agent_name} run failed on attempt {attempt + 1}: {e}"
+                    )
+                    future.cancel()
+            attempt += 1
+            if attempt <= retries:
+                sleep_for = random.uniform(0, backoff_base * (2 ** (attempt - 1)))
+                time.sleep(sleep_for)
+        return AgentResult(success=False, error=last_error)
 
     def _extract_function_call_output(
         self, agent_response: Any

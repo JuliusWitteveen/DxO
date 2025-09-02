@@ -2,6 +2,8 @@ import importlib
 import os
 import sys
 import types
+import time
+import random
 
 import pytest
 
@@ -86,8 +88,37 @@ class TestSafeAgentRun:
                 raise RuntimeError("boom")
 
         agent = FailAgent()
-        result = orchestrator._safe_agent_run(agent, "hi")
+        result = orchestrator._safe_agent_run(agent, "hi", timeout=0.05, retries=0)
         assert not result.success and "boom" in result.error
+
+    def test_safe_agent_run_retries_on_timeout(self, orchestrator, main_module, monkeypatch):
+        calls = {"count": 0}
+
+        class SlowAgent:
+            agent_name = "slow"
+
+            def run(self, prompt):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    time.sleep(0.1)  # exceed timeout
+                return "ok"
+
+        agent = SlowAgent()
+        monkeypatch.setattr(random, "uniform", lambda a, b: 0)
+        result = orchestrator._safe_agent_run(agent, "hi", timeout=0.05, retries=1)
+        assert result.success and calls["count"] == 2
+
+    def test_safe_agent_run_timeout_failure(self, orchestrator, main_module, monkeypatch):
+        class HangingAgent:
+            agent_name = "hang"
+
+            def run(self, prompt):
+                time.sleep(0.1)
+
+        agent = HangingAgent()
+        monkeypatch.setattr(random, "uniform", lambda a, b: 0)
+        result = orchestrator._safe_agent_run(agent, "hi", timeout=0.05, retries=1)
+        assert not result.success and "timeout" in result.error.lower()
 
 
 class TestValidateAndCorrectAction:
