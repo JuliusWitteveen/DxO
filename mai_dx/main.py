@@ -687,7 +687,7 @@ class MaiDxOrchestrator:
             return "No interaction needed for 'diagnose' action."
         request = f"Request from Diagnostic Panel: {action.action_type} - {action.content}"
         prompt = f"Full Case Details (for your reference only):\n---\n{full_case_details}\n---\n\n{request}"
-        result = self._safe_agent_run(self.agents[AgentRole.GATEKeeper], prompt)
+        result = self._safe_agent_run(self.agents[AgentRole.GATEKEEPER], prompt)
         return result.data if result.success else f"Error: {result.error}"
 
     def _judge_diagnosis(
