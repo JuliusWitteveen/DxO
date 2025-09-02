@@ -8,10 +8,11 @@ DxO is a language‑model–driven diagnostic orchestrator composed of multiple 
 - `example_autonomous.py` – CLI benchmark run.
 - `config.py` – default prompts, model list and test costs.
 - `llm_client_factory.py` – selects OpenAI Responses vs Chat Completions API.
+- `ui_controls.py` – Streamlit sidebar for model settings and parameter gating.
 - `mai_dx/` – core orchestrator, data structures, persistence and UI helpers.
 - `scripts/install_dependencies.py` – optional dependency installer.
 - `tests/` – unit tests for parsing and persistence.
-- `swarms_utils/` – lightweight wrappers around external `swarms` utilities.
+- `swarms_utils/` – lightweight wrappers around external `swarms` utilities (e.g., `utils/litellm_wrapper.py` strips unsupported params).
 
 ## Component Catalog
 | Component | Purpose | Key API | Inputs → Outputs | Dependencies |
@@ -21,10 +22,11 @@ DxO is a language‑model–driven diagnostic orchestrator composed of multiple 
 | `InteractiveDxSession` (`mai_dx/interactive.py`) | Wraps orchestrator for Streamlit UI | `start()`, `step()`, `update_runtime_params()` | user inputs → session turns persisted | `MaiDxOrchestrator`, `persistence`, `costing` |
 | `persistence` (`mai_dx/persistence.py`) | Encrypts/decrypts session files | `save_session()`, `load_session()`, `list_sessions()` | session dict ↔ encrypted JSON | `.env` (`MAI_DX_SECRET`), `cryptography` |
 | `costing` (`mai_dx/costing.py`) | Lookup diagnostic test costs | `estimate_cost(tests, db)` | tests → cost int | `config.DEFAULT_TEST_COSTS` |
-| UI module (`mai_dx/ui/*`) | Streamlit components for visualization & controls | e.g., `display_current_request()`, `render_settings_panel()` | session state → UI widgets | `streamlit`, `plotly` |
+| `ui_controls` (`ui_controls.py`) | Streamlit sidebar to configure model parameters | `render_settings_panel()`, `get_settings()` | user selections → settings dict | `streamlit`, `_use_responses_api`, `config.OPENAI_MODELS` |
+| UI module (`mai_dx/ui/*`) | Streamlit components for visualization & controls | e.g., `display_current_request()` | session state → UI widgets | `streamlit`, `plotly` |
 
 ## Build/Run Path
-1. **Interactive UI** (`streamlit run app.py`): `app.py` initializes the Streamlit session, collects settings, and instantiates `LLMClient`. User inputs spawn an `InteractiveDxSession`, which calls `_perform_turn` on `MaiDxOrchestrator` each time the physician responds.
+1. **Interactive UI** (`streamlit run app.py`): `app.py` initializes the Streamlit session, renders `ui_controls.render_settings_panel` to collect model settings【F:ui_controls.py†L25-L44】, and instantiates `LLMClient` (routing to Responses or Chat API via `_use_responses_api`【F:llm_client_factory.py†L6-L27】). User inputs spawn an `InteractiveDxSession`, which calls `_perform_turn` on `MaiDxOrchestrator` each time the physician responds.
 2. **Autonomous CLI** (`python example_autonomous.py`): creates an orchestrator variant with `MaiDxOrchestrator.create_variant`, then executes `run` which loops through `_perform_turn`, interacts with a Gatekeeper for simulated patient responses, and finishes with Judge scoring.
 
 ### Main Control Loop
@@ -34,13 +36,23 @@ DxO is a language‑model–driven diagnostic orchestrator composed of multiple 
 ### Component Diagram
 ```mermaid
 graph TD
-  UI[Streamlit UI] -->|physician input| IS[InteractiveDxSession]
+  UI[Streamlit UI] -->|settings| UC[ui_controls]
+  UC -->|configures| LLM[LLMClient]
+  UI -->|physician input| IS[InteractiveDxSession]
   IS -->|calls| ORCH[MaiDxOrchestrator]
   ORCH -->|runs| AGENTS[Panel Agents]
   ORCH -->|save/load| PERSIST[persistence]
   PERSIST -->|encrypted JSON| Sessions[(sessions/)]
   ORCH -->|LLM API| OpenAI[(OpenAI)]
   ORCH -->|Gatekeeper/Judge| LLMs[(External LLMs)]
+```
+
+### LLM Client Routing
+```mermaid
+flowchart TD
+  RS[render_settings_panel] --> Q{_use_responses_api?}
+  Q -->|yes| R[_gen_responses]
+  Q -->|no| C[_gen_chat]
 ```
 
 ### Sequence: Interactive Turn
@@ -61,6 +73,7 @@ S-->>UI: display next request
 ```
 
 ### Dataflow Summary
+0. Sidebar `ui_controls.render_settings_panel` collects model parameters, omitting `top_p` for Responses API models and gating reasoning effort【F:ui_controls.py†L56-L68】【F:ui_controls.py†L82-L107】【F:ui_controls.py†L134-L137】.
 1. User provides findings → Streamlit UI → `InteractiveDxSession` updates `CaseState`.
 2. `MaiDxOrchestrator` aggregates agent analyses → Consensus action.
 3. Actions/tests update cost and differential; in autonomous mode the Gatekeeper supplies responses.
@@ -165,6 +178,9 @@ stateDiagram-v2
 - Differential entries must have probabilities between 0 and 1【F:mai_dx/main.py†L239-L244】【F:mai_dx/main.py†L656-L676】.
 - Interactive session turn numbers must stay in sync with UI, otherwise `ValueError` is raised【F:mai_dx/interactive.py†L82-L88】.
 - Sessions are encrypted with a persistent Fernet key; absence generates one and updates `.env`【F:mai_dx/persistence.py†L49-L59】.
+- `ui_controls.render_settings_panel` seeds Streamlit session state and only persists `top_p` for Chat Completions models while gating `reasoning_effort` to compatible models【F:ui_controls.py†L6-L23】【F:ui_controls.py†L56-L68】【F:ui_controls.py†L82-L107】【F:ui_controls.py†L134-L137】.
+- `_use_responses_api` routes model families; `LLMClient` omits `top_p` and adds `reasoning` settings for Responses API models, ensuring consistent parameter handling【F:llm_client_factory.py†L6-L27】【F:llm_client_factory.py†L60-L66】【F:llm_client_factory.py†L110-L116】【F:llm_client_factory.py†L121-L123】.
+- `swarms_utils.utils.litellm_wrapper.completion` raises a `RuntimeError` if `litellm` is absent and strips `top_p` when targeting the Responses API【F:swarms_utils/utils/litellm_wrapper.py†L1-L6】【F:swarms_utils/utils/litellm_wrapper.py†L20-L43】.
 
 ## Risk Register
 | Risk | Severity | Symptom/Quick Repro | Suggested Fix |
