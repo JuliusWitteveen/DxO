@@ -101,7 +101,7 @@ stateDiagram-v2
     Evaluated --> [*]
 ```
 **Concurrency & back-pressure** – sequential loop; each iteration invokes `_perform_turn` then optional Gatekeeper call. Agent calls inside `_perform_turn` are delayed by `request_delay` but lack rate-limit back-pressure.
-**Hazards** – forced diagnosis when budget exceeded; Gatekeeper role misnaming (`GATEKeeper`) can raise `AttributeError`; external calls lack timeout/retry, so a hung LLM blocks progress【F:mai_dx/main.py†L720-L783】【F:mai_dx/main.py†L690-L704】.
+**Hazards** – forced diagnosis when budget exceeded; external calls lack timeout/retry, so a hung LLM blocks progress【F:mai_dx/main.py†L720-L783】.
 
 ### MaiDxOrchestrator._perform_turn – per-turn deliberation
 ```mermaid
@@ -169,7 +169,6 @@ stateDiagram-v2
 ## Risk Register
 | Risk | Severity | Symptom/Quick Repro | Suggested Fix |
 | --- | --- | --- | --- |
-| **Incorrect enum name for Gatekeeper** (`AgentRole.GATEKeeper`) causes `AttributeError` when autonomous mode calls `_interact_with_gatekeeper` | High | Run `example_autonomous.py` → crash before first gatekeeper call | Fix enum reference to `AgentRole.GATEKEEPER`; add tests for gatekeeper path |
 | **LLM call concurrency without timeouts** may hit rate limits or hang | Med | Simultaneous agent runs via `ThreadPoolExecutor` stall or fail under slow network | Add per‑request timeouts and retry/backoff logic |
 | **Insecure fallback encryption** when `cryptography` missing stores sessions base64‑encoded | Med | Omit `cryptography` dependency and inspect saved file → readable | Require `cryptography` in production or warn user, disable saving without secure key |
 | **API key persistence in plain text** (`app.py` writes to `.env`) | Med | Key stored unencrypted on disk | Use OS keyring or instruct users about security implications |
@@ -185,7 +184,6 @@ stateDiagram-v2
 | --- | --- | --- | --- | --- |
 | Orchestrator flow tests cover budgeted, question_only, and gatekeeper/judge paths | 4 | 3 | 4 | Pytest suite exercises `_perform_turn` and `run()` under each mode with stubbed Gatekeeper/Judge interactions; all tests pass |
 | Add timeout and retry around LLM calls | 5 | 3 | 3 | `_safe_agent_run` or `LLMClient.generate` enforces configurable timeout and single retry with backoff; simulated timeouts confirm recovery |
-| Fix Gatekeeper enum typo and add guard tests | 3 | 1 | 5 | `example_autonomous.py` runs without `AttributeError`; unit test verifies `_interact_with_gatekeeper` uses `AgentRole.GATEKEEPER` |
 | Harden session persistence with cryptography requirement and fallback warning | 3 | 2 | 4 | Saving a session without `cryptography` raises explicit warning/error; tests validate secure key requirement and fallback behavior |
 | Introduce dependency injection for swarms/OpenAI clients | 2 | 3 | 3 | Orchestrator accepts pluggable client factories so tests can supply stubs without monkeypatching |
 
