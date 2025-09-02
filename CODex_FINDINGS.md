@@ -180,5 +180,14 @@ stateDiagram-v2
 - **Coverage gaps**: no tests for Streamlit UI, agent concurrency, cost budgeting, or autonomous run flows. Roughly covers <20% of modules.
 - **Tooling**: no linting or type-check scripts detected; optional `scripts/install_dependencies.py` installs runtime packages.
 
+## Backlog
+| Item | Impact | Effort | Confidence | Acceptance Criteria |
+| --- | --- | --- | --- | --- |
+| Orchestrator flow tests cover budgeted, question_only, and gatekeeper/judge paths | 4 | 3 | 4 | Pytest suite exercises `_perform_turn` and `run()` under each mode with stubbed Gatekeeper/Judge interactions; all tests pass |
+| Add timeout and retry around LLM calls | 5 | 3 | 3 | `_safe_agent_run` or `LLMClient.generate` enforces configurable timeout and single retry with backoff; simulated timeouts confirm recovery |
+| Fix Gatekeeper enum typo and add guard tests | 3 | 1 | 5 | `example_autonomous.py` runs without `AttributeError`; unit test verifies `_interact_with_gatekeeper` uses `AgentRole.GATEKEEPER` |
+| Harden session persistence with cryptography requirement and fallback warning | 3 | 2 | 4 | Saving a session without `cryptography` raises explicit warning/error; tests validate secure key requirement and fallback behavior |
+| Introduce dependency injection for swarms/OpenAI clients | 2 | 3 | 3 | Orchestrator accepts pluggable client factories so tests can supply stubs without monkeypatching |
+
 ---
 Generated on 2025-09-02.
