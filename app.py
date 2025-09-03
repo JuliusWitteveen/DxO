@@ -74,7 +74,7 @@ def main():
         llm = LLMClient(
             model=SETTINGS["model_name"],
             temperature=SETTINGS["temperature"],
-            top_p=SETTINGS["top_p"],
+            top_p=SETTINGS.get("top_p", 1.0),  # Safely get top_p
             max_tokens=SETTINGS["max_tokens"],
             reasoning_effort=SETTINGS["reasoning_effort"],
         )
@@ -327,7 +327,7 @@ def main():
                     st.subheader("🧠 Agent Deliberations")
                     for agent_name, response in selected_turn.deliberation.items():
                         with st.expander(f"{agent_name}", expanded=False):
-                            st.text(_fmt_preview(response))> 1000 else ""))
+                            st.text(_fmt_preview(response))
 
         with tab3:
             st.header("📊 Diagnostic Analytics")

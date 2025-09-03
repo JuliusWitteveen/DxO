@@ -9,6 +9,7 @@ import streamlit as st
 from mai_dx.export import export_session_to_markdown
 from mai_dx.interactive import InteractiveDxSession
 from mai_dx.persistence import load_session, save_session
+from ui_controls import get_settings
 
 
 def is_api_key_set() -> bool:
@@ -16,16 +17,24 @@ def is_api_key_set() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))
 
 
-def initialize_session(model_name: str = "gpt-4o", mode: str = "no_budget", case_details: str = "") -> bool:
+def initialize_session(model_name: str, mode: str, case_details: str = "") -> bool:
     """Initialize a new diagnostic session using InteractiveDxSession."""
     try:
+        # Get the full, current settings from the UI controls to ensure
+        # all parameters like top_p and temperature are respected.
+        ui_settings = get_settings()
+
         config = {
             "model_name": model_name,
             "mode": mode,
             "max_iterations": 15,
             "initial_budget": 10000,
             "physician_visit_cost": 300,
+            # Pass all relevant parameters to the orchestrator
+            "top_p": ui_settings.get("top_p"),
+            "temperature": ui_settings.get("temperature"),
         }
+
         st.session_state.session = InteractiveDxSession(orchestrator_config=config)
         if case_details:
             st.session_state.session.start(case_details)

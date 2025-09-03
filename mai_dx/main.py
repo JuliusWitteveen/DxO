@@ -28,10 +28,10 @@ from mai_dx.structures import AgentRole, Action
 from mai_dx.prompts import get_prompt_for_role
 from mai_dx.costing import estimate_cost
 from mai_dx.utils import resilient_parser
+from model_api_selector import use_responses_api
+from llm_client_factory import MAI_LLM
 
 # --- Dependency Management ---
-# Dependencies are listed in requirements.txt and can be installed using
-# `pip install -r requirements.txt` or the `scripts/install_dependencies.py` script.
 try:
     import swarms
     from dotenv import load_dotenv
@@ -105,14 +105,7 @@ class AgentResult:
 
 @dataclass
 class CaseState:
-    """Structured state management for the diagnostic process.
-
-    This dataclass represents the single source of truth for the *current*
-    state of an ongoing diagnostic session. It is mutable and updated by the
-    orchestrator during each turn. It should be used by all agents to inform
-    their decisions.
-    """
-
+    """Structured state management for the diagnostic process."""
     initial_vignette: str
     evidence_log: List[str] = field(default_factory=list)
     differential_diagnosis: Dict[str, float] = field(default_factory=dict)
@@ -123,48 +116,39 @@ class CaseState:
     last_actions: List[Action] = field(default_factory=list)
 
     def add_evidence(self, evidence: str):
-        """Add a new piece of evidence to the log."""
         self.evidence_log.append(f"[Turn {self.iteration}] {evidence}")
 
     def update_differential(self, diagnosis_dict: Dict[str, float]):
-        """Update the differential diagnosis with new probabilities."""
         self.differential_diagnosis.update(diagnosis_dict)
 
     def add_test(self, test_name: str, cost: int):
-        """Record a performed test and its associated cost."""
         self.tests_performed.append(test_name)
         self.cumulative_cost += cost
 
     def add_question(self, question: str):
-        """Record a question posed during the diagnostic process."""
         self.questions_asked.append(question)
 
     def add_action(self, action: Action):
-        """Track the latest action, keeping only the most recent three."""
         self.last_actions.append(action)
         if len(self.last_actions) > 3:
             self.last_actions.pop(0)
 
     def is_stagnating(self) -> bool:
-        """Return True if the two most recent actions are identical."""
         if len(self.last_actions) < 2:
             return False
         return self.last_actions[-1] == self.last_actions[-2]
 
     def get_max_confidence(self) -> float:
-        """Return the highest diagnosis probability."""
         if not self.differential_diagnosis:
             return 0.0
         return max(self.differential_diagnosis.values())
 
     def get_leading_diagnosis(self) -> str:
-        """Return the diagnosis with the highest confidence."""
         if not self.differential_diagnosis:
             return "No diagnosis formulated"
         return max(self.differential_diagnosis.items(), key=lambda x: x[1])[0]
 
     def summarize_evidence(self) -> str:
-        """Summarize the accumulated evidence for use in prompts."""
         if len(self.evidence_log) <= 5:
             return "\n".join(self.evidence_log)
         summary_parts = (
@@ -178,7 +162,6 @@ class CaseState:
 @dataclass
 class DeliberationState:
     """Structured state for panel deliberation."""
-
     hypothesis_analysis: str = ""
     test_chooser_analysis: str = ""
     challenger_analysis: str = ""
@@ -188,22 +171,16 @@ class DeliberationState:
     stagnation_detected: bool = False
 
     def to_consensus_prompt(self) -> str:
-        """Build a prompt summarizing panel deliberations for consensus."""
         prompt = f"""
 You are the Consensus Coordinator. Here is the panel's analysis:
-
 **Differential Diagnosis (Dr. Hypothesis):**
 {self.hypothesis_analysis or 'Not yet formulated'}
-
 **Test Recommendations (Dr. Test-Chooser):**
 {self.test_chooser_analysis or 'None provided'}
-
 **Critical Challenges (Dr. Challenger):**
 {self.challenger_analysis or 'None identified'}
-
 **Cost Assessment (Dr. Stewardship):**
 {self.stewardship_analysis or 'Not evaluated'}
-
 **Quality Control (Dr. Checklist):**
 {self.checklist_analysis or 'No issues noted'}
 """
@@ -218,7 +195,6 @@ You are the Consensus Coordinator. Here is the panel's analysis:
 @dataclass
 class DiagnosisResult:
     """Stores the final result of a diagnostic session."""
-
     final_diagnosis: str
     ground_truth: str
     accuracy_score: float
@@ -229,7 +205,6 @@ class DiagnosisResult:
 
 
 def _get_fallback_action(reason: str) -> Action:
-    """Creates a standardized fallback action for error states."""
     return Action(
         action_type="ask",
         content="Could you clarify the next step? (System experienced a processing issue)",
@@ -238,12 +213,7 @@ def _get_fallback_action(reason: str) -> Action:
 
 
 class MaiDxOrchestrator:
-    """Implement the MAI Diagnostic Orchestrator (MAI-DxO) framework.
-
-    This class orchestrates a virtual panel of AI agents to perform sequential
-    medical diagnosis.
-    """
-
+    """Implement the MAI Diagnostic Orchestrator (MAI-DxO) framework."""
     def __init__(
         self,
         model_name: str = "gpt-4o-mini",
@@ -254,24 +224,24 @@ class MaiDxOrchestrator:
         request_delay: float = 1.0,
         test_costs: Optional[Dict[str, int]] = None,
         prompt_overrides: Optional[Dict[str, str]] = None,
+        top_p: Optional[float] = None,
+        temperature: Optional[float] = None,
     ):
-        """Initialize the orchestrator with model and runtime settings."""
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.initial_budget = initial_budget
         self.mode = mode
         self.physician_visit_cost = physician_visit_cost
         self.request_delay = request_delay
-        self.top_p = 1.0  # Default value, will be used by compatible models
+        self.top_p = top_p if top_p is not None else 1.0
+        self.temperature = temperature if temperature is not None else 0.1
 
-        # Initialize the test cost database, allowing overrides for customization
         if test_costs is not None:
             self.test_cost_db = dict(test_costs)
         else:
             from config import DEFAULT_TEST_COSTS
             self.test_cost_db = DEFAULT_TEST_COSTS.copy()
 
-        # Store optional system prompt overrides for agents
         self.prompt_overrides: Dict[AgentRole, str] = {}
         if prompt_overrides:
             for role_key, prompt in prompt_overrides.items():
@@ -287,45 +257,25 @@ class MaiDxOrchestrator:
         )
 
     def _init_agents(self):
-        """Initialize all required agents."""
         consensus_tool = {
-            "type": "function",
-            "function": {
-                "name": "make_consensus_decision",
-                "description": "Make a structured consensus decision for the next diagnostic action",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action_type": {
-                            "type": "string",
-                            "enum": ["ask", "test", "diagnose"],
-                        },
+            "type": "function", "function": {
+                "name": "make_consensus_decision", "description": "Make a structured consensus decision for the next diagnostic action", "parameters": {
+                    "type": "object", "properties": {
+                        "action_type": {"type": "string", "enum": ["ask", "test", "diagnose"]},
                         "content": {"type": "string"},
                         "reasoning": {"type": "string"},
-                    },
-                    "required": ["action_type", "content", "reasoning"],
+                    }, "required": ["action_type", "content", "reasoning"],
                 },
             },
         }
         
         judge_tool = {
-            "type": "function",
-            "function": {
-                "name": "evaluate_diagnosis",
-                "description": "Evaluate the final diagnosis against the ground truth.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "score": {
-                            "type": "number",
-                            "description": "Accuracy score from 1 (Incorrect) to 5 (Perfect)",
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Concise justification for the score",
-                        },
-                    },
-                    "required": ["score", "reasoning"],
+            "type": "function", "function": {
+                "name": "evaluate_diagnosis", "description": "Evaluate the final diagnosis against the ground truth.", "parameters": {
+                    "type": "object", "properties": {
+                        "score": {"type": "number", "description": "Accuracy score from 1 (Incorrect) to 5 (Perfect)"},
+                        "reasoning": {"type": "string", "description": "Concise justification for the score"},
+                    }, "required": ["score", "reasoning"],
                 },
             },
         }
@@ -334,24 +284,27 @@ class MaiDxOrchestrator:
         failed_roles: List[str] = []
         for role in AgentRole:
             max_tokens = 600 if role != AgentRole.HYPOTHESIS else 1000
-            agent_args = {
+            
+            # Use the MAI_LLM wrapper which handles parameter sanitization
+            llm = MAI_LLM(
+                model_name=self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=max_tokens,
+            )
+            
+            agent_args: Dict[str, Any] = {
+                "llm": llm,
                 "agent_name": role.value,
                 "system_prompt": get_prompt_for_role(role, self.prompt_overrides),
-                "model_name": self.model_name,
                 "max_loops": 1,
-                "max_tokens": max_tokens,
-                "temperature": 0.1,
             }
-            # Add top_p only for compatible models (legacy chat completions)
-            m = self.model_name.lower()
-            if m.startswith("gpt-4o") or m.startswith("gpt-4-") or m.startswith("gpt-3"):
-                 agent_args["top_p"] = self.top_p
 
             if role == AgentRole.CONSENSUS:
-                agent_args["tools_list_dictionary"] = [consensus_tool]
+                agent_args["tools"] = [consensus_tool]
                 agent_args["tool_choice"] = "auto"
             elif role == AgentRole.JUDGE:
-                agent_args["tools_list_dictionary"] = [judge_tool]
+                agent_args["tools"] = [judge_tool]
                 agent_args["tool_choice"] = "auto"
 
             try:
@@ -362,9 +315,7 @@ class MaiDxOrchestrator:
 
         if failed_roles:
             raise RuntimeError(
-                "Agent initialization failed for: "
-                + ", ".join(failed_roles)
-                + ". Check API keys and configuration."
+                "Agent initialization failed for: " + ", ".join(failed_roles) + ". Check API keys and configuration."
             )
 
         logger.info(
@@ -375,16 +326,7 @@ class MaiDxOrchestrator:
         self,
         model_name: Optional[str] = None,
         prompt_overrides: Optional[Dict[str, str]] = None,
-    ) -> None:
-        """Update model or agent prompts at runtime.
-
-        Args:
-            model_name: New model name to use for all agents.
-            prompt_overrides: Mapping of AgentRole names to new system prompts.
-
-        Returns:
-            None
-        """
+    ):
         need_reinit = False
         if model_name and model_name != self.model_name:
             self.model_name = model_name
@@ -403,25 +345,18 @@ class MaiDxOrchestrator:
             self._init_agents()
 
     def _safe_agent_run(
-        self,
-        agent: Agent,
-        prompt: str,
-        *,
-        timeout: float = 30.0,
-        retries: int = 1,
-        backoff_base: float = 0.1,
+        self, agent: Agent, prompt: str, *, timeout: float = 30.0, retries: int = 1, backoff_base: float = 0.1,
     ) -> AgentResult:
-        """Run an agent with timeout and retry/backoff."""
         attempt = 0
         last_error: Optional[str] = None
         while attempt <= retries:
             time.sleep(self.request_delay)
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(agent.run, prompt)
+                future = executor.submit(agent.run, task=prompt)
                 try:
                     data = future.result(timeout=timeout)
                     return AgentResult(success=True, data=data)
-                except Exception as e:  # captures TimeoutError and others
+                except Exception as e:
                     if isinstance(e, FuturesTimeout):
                         last_error = "timeout"
                     else:
@@ -439,45 +374,34 @@ class MaiDxOrchestrator:
     def _extract_function_call_output(
         self, agent_response: Any
     ) -> Optional[Dict[str, Any]]:
-        """
-        Robustly extract tool-call arguments from various possible agent
-        response structures.
-        """
         if not agent_response:
             return None
 
-        # Helper to validate if a dictionary has the required keys for an Action
         def is_action_dict(data: Any) -> bool:
             return isinstance(data, dict) and all(
                 k in data for k in ("action_type", "content", "reasoning")
             )
 
-        # Path 1: The response is already a dictionary that looks like an action
         if is_action_dict(agent_response):
             return agent_response
 
-        # Path 2: The entire response is a string that might contain a JSON/dict
         if isinstance(agent_response, str):
             match = re.search(r'\{.*\}', agent_response, re.DOTALL)
             if match:
                 parsed_string = resilient_parser(match.group(0))
-                # Check for either Action or Judge tool format
                 if parsed_string and (
                     is_action_dict(parsed_string) or
                     all(k in parsed_string for k in ("score", "reasoning"))
                 ):
                     return parsed_string
 
-        # Path 3: A general recursive search for a valid action dictionary as a fallback
         def find_action_recursive(data: Any) -> Optional[Dict[str, Any]]:
-            # Check for either Action or Judge tool format
             if isinstance(data, dict) and (
                 is_action_dict(data) or
                 all(k in data for k in ("score", "reasoning"))
             ):
                 return data
             
-            # If the dict contains 'arguments', try parsing them
             if isinstance(data, dict):
                 args = data.get("arguments")
                 if isinstance(args, str):
@@ -493,7 +417,6 @@ class MaiDxOrchestrator:
                 ):
                     return args
 
-            # Recurse through nested structures
             if isinstance(data, dict):
                 for key, value in data.items():
                     found = find_action_recursive(value)
@@ -517,7 +440,6 @@ class MaiDxOrchestrator:
     def _build_base_context(
         self, case_state: CaseState, remaining_budget: int
     ) -> str:
-        """Build the base case context shared with panel agents."""
         return f"""
         === CASE STATUS - ROUND {case_state.iteration} ===
         Initial Presentation: {case_state.initial_vignette}
@@ -534,11 +456,9 @@ class MaiDxOrchestrator:
     def _collect_panel_deliberation(
         self, base_context: str, case_state: CaseState
     ) -> DeliberationState:
-        """Gather analyses from individual panel agents, running them in parallel."""
         deliberation_state = DeliberationState()
         unavailable_msg = "Analysis not available due to a technical error."
 
-        # Dr. Hypothesis must run first as its output informs other agents.
         hypo_result = self._safe_agent_run(
             self.agents[AgentRole.HYPOTHESIS], base_context
         )
@@ -550,7 +470,6 @@ class MaiDxOrchestrator:
             case_state, deliberation_state.hypothesis_analysis
         )
 
-        # These agents can run in parallel.
         parallel_agents = {
             AgentRole.TEST_CHOOSER: "test_chooser_analysis",
             AgentRole.CHALLENGER: "challenger_analysis",
@@ -579,7 +498,6 @@ class MaiDxOrchestrator:
         case_state: CaseState,
         remaining_budget: int,
     ) -> Action:
-        """Derive the next action from deliberation and budget."""
         consensus_prompt = deliberation_state.to_consensus_prompt()
         consensus_result = self._safe_agent_run(
             self.agents[AgentRole.CONSENSUS], consensus_prompt
@@ -615,39 +533,21 @@ class MaiDxOrchestrator:
     def _perform_turn(
         self, case_state: CaseState
     ) -> Tuple[Action, DeliberationState]:
-        """
-        Perform one deliberation turn and return the action and state.
-
-        This is the core loop of the diagnostic process. It involves:
-        1. Building a shared context for all agents.
-        2. Collecting analyses from the agent panel in parallel.
-        3. Checking for diagnostic stagnation.
-        4. Deriving a final consensus action.
-        5. Handling any critical errors that occur during the process.
-        """
         logger.info(
             f"--- Starting Diagnostic Loop {case_state.iteration}/{self.max_iterations} ---"
         )
 
         try:
-            # 1. Build the context with all current case information.
             remaining_budget = self.initial_budget - case_state.cumulative_cost
             base_context = self._build_base_context(case_state, remaining_budget)
-
-            # 2. Run the panel deliberation.
             deliberation_state = self._collect_panel_deliberation(
                 base_context, case_state
             )
-
-            # 3. Check if the last few actions have been repetitive.
             deliberation_state.stagnation_detected = case_state.is_stagnating()
-
-            # 4. Synthesize deliberations into a single, structured action.
             action = self._determine_next_action(
                 deliberation_state, case_state, remaining_budget
             )
         except RuntimeError as e:
-            # 5. Catch critical failures (e.g., Hypothesis agent) and return a safe action.
             logger.error(f"A critical error occurred during the turn: {e}")
             action = Action(
                 action_type="ask",
@@ -664,7 +564,6 @@ class MaiDxOrchestrator:
     def _validate_and_correct_action(
         self, action: Action, case_state: CaseState, remaining_budget: int
     ) -> Action:
-        """Validate and correct actions based on mode constraints and context."""
         if self.mode == "question_only" and action.action_type == "test":
             action.action_type = "ask"
             action.content = "Can you provide more details? (Test ordering disabled in question_only mode)"
@@ -679,7 +578,6 @@ class MaiDxOrchestrator:
         return action
 
     def _update_differential_from_text(self, case_state: CaseState, text: str):
-        """Extract and update differential diagnosis from JSON-formatted text."""
         try:
             if not isinstance(text, str):
                 text = str(text)
@@ -707,7 +605,6 @@ class MaiDxOrchestrator:
     def _interact_with_gatekeeper(
         self, action: Action, full_case_details: str
     ) -> str:
-        """Send the panel's action to the Gatekeeper and return its response."""
         if action.action_type == "diagnose":
             return "No interaction needed for 'diagnose' action."
         request = f"Request from Diagnostic Panel: {action.action_type} - {action.content}"
@@ -718,7 +615,6 @@ class MaiDxOrchestrator:
     def _judge_diagnosis(
         self, candidate_diagnosis: str, ground_truth: str
     ) -> Dict[str, Any]:
-        """Use the Judge agent to evaluate the final diagnosis."""
         prompt = f"""
         Please evaluate the following diagnosis against the ground truth.
         Ground Truth: '{ground_truth}'
@@ -748,7 +644,6 @@ class MaiDxOrchestrator:
         full_case_details: str,
         ground_truth_diagnosis: str,
     ) -> DiagnosisResult:
-        """Execute the full autonomous sequential diagnostic process."""
         case_state = CaseState(
             initial_vignette=initial_case_info,
             cumulative_cost=self.physician_visit_cost,
@@ -809,7 +704,6 @@ class MaiDxOrchestrator:
 
     @classmethod
     def create_variant(cls, variant: str, **kwargs) -> "MaiDxOrchestrator":
-        """Create a preconfigured orchestrator variant."""
         configs = {
             "instant": {"mode": "instant", "max_iterations": 1},
             "question_only": {"mode": "question_only"},
